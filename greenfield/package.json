@@ -8,7 +8,7 @@
     "build": "npm run build:native && npm run build:ts && npm run copy:renderer",
     "build:native": "npm exec -- napi build --platform --release --manifest-path rust-core/Cargo.toml --output-dir rust-core --dts index.d.ts",
     "build:ts": "tsc -b",
-    "copy:renderer": "cpx \"src/renderer/**/*.html\" dist/renderer",
+    "copy:renderer": "cpx \"src/renderer/**/*.{html,css}\" dist/renderer",
     "dev": "npm run build:native && npm run build:ts && npm run copy:renderer && electron .",
     "dev:native": "npm exec -- napi build --platform --watch --manifest-path rust-core/Cargo.toml --output-dir rust-core --dts index.d.ts",
     "lint": "tsc --noEmit",
@@ -17,7 +17,8 @@
     "test:ts": "npm run build:native && vitest run"
   },
   "dependencies": {
-    "zustand": "^4.5.2"
+    "zustand": "^4.5.2",
+    "maplibre-gl": "^3.5.2"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.2.0",

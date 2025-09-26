@@ -23,6 +23,7 @@ tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sy
 tokio-stream = "0.1"
 mavlink = { version = "0.15", default-features = true, features = ["tokio-1"] }
 qgc-domain = { path = "domain-model" }
+num-traits = "0.2"
 
 [build-dependencies]
 napi-build = "2.0"

@@ -37,6 +37,8 @@
 - Provide mission editor UI with map canvas (Leaflet/Mapbox GL) and pattern templates.
 - Add mission upload/download flows via Rust using MAVLink Mission protocol; include optimistic concurrency + rollback semantics.
 
+**Status update (September 26, 2025):** ✅ Completed. Mission data models now live inside `qgc-domain`, the Rust core orchestrates MAVLink mission upload/download with rollback-aware transactions, and the Electron renderer exposes a MapLibre mission planner with waypoint editing, pattern generation, and live sync indicators.
+
 ### Phase 4 – Configuration & Calibration (Week 12-20)
 - Migrate parameter editing with staged apply + validation.
 - Implement sensor calibration workflows (compass, accelerometer) by wrapping existing QGC state machines in Rust.

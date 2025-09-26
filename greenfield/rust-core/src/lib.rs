@@ -352,6 +352,260 @@ impl From<domain::ParameterValue> for ParameterValue {
     }
 }
 
+#[napi(object)]
+pub struct MissionCoordinate {
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub altitude_m: f64,
+}
+
+impl From<domain::MissionCoordinate> for MissionCoordinate {
+    fn from(value: domain::MissionCoordinate) -> Self {
+        Self {
+            latitude_deg: value.latitude_deg,
+            longitude_deg: value.longitude_deg,
+            altitude_m: value.altitude_m as f64,
+        }
+    }
+}
+
+impl From<MissionCoordinate> for domain::MissionCoordinate {
+    fn from(value: MissionCoordinate) -> Self {
+        Self {
+            latitude_deg: value.latitude_deg,
+            longitude_deg: value.longitude_deg,
+            altitude_m: value.altitude_m as f32,
+        }
+    }
+}
+
+#[napi(string_enum)]
+pub enum MissionFrame {
+    Global,
+    GlobalRelativeAlt,
+    GlobalTerrainAlt,
+    Mission,
+}
+
+impl From<domain::MissionFrame> for MissionFrame {
+    fn from(value: domain::MissionFrame) -> Self {
+        match value {
+            domain::MissionFrame::Global => Self::Global,
+            domain::MissionFrame::GlobalRelativeAlt => Self::GlobalRelativeAlt,
+            domain::MissionFrame::GlobalTerrainAlt => Self::GlobalTerrainAlt,
+            domain::MissionFrame::Mission => Self::Mission,
+        }
+    }
+}
+
+impl From<MissionFrame> for domain::MissionFrame {
+    fn from(value: MissionFrame) -> Self {
+        match value {
+            MissionFrame::Global => Self::Global,
+            MissionFrame::GlobalRelativeAlt => Self::GlobalRelativeAlt,
+            MissionFrame::GlobalTerrainAlt => Self::GlobalTerrainAlt,
+            MissionFrame::Mission => Self::Mission,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct MissionItem {
+    pub seq: u16,
+    pub command: u16,
+    pub frame: MissionFrame,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub altitude_m: f64,
+    pub param1: f64,
+    pub param2: f64,
+    pub param3: f64,
+    pub param4: f64,
+    pub auto_continue: bool,
+    pub is_current: bool,
+}
+
+impl From<domain::MissionItem> for MissionItem {
+    fn from(value: domain::MissionItem) -> Self {
+        Self {
+            seq: value.seq,
+            command: value.command,
+            frame: value.frame.into(),
+            latitude_deg: value.latitude_deg,
+            longitude_deg: value.longitude_deg,
+            altitude_m: value.altitude_m as f64,
+            param1: value.param1 as f64,
+            param2: value.param2 as f64,
+            param3: value.param3 as f64,
+            param4: value.param4 as f64,
+            auto_continue: value.auto_continue,
+            is_current: value.is_current,
+        }
+    }
+}
+
+impl From<MissionItem> for domain::MissionItem {
+    fn from(value: MissionItem) -> Self {
+        Self {
+            seq: value.seq,
+            command: value.command,
+            frame: value.frame.into(),
+            latitude_deg: value.latitude_deg,
+            longitude_deg: value.longitude_deg,
+            altitude_m: value.altitude_m as f32,
+            param1: value.param1 as f32,
+            param2: value.param2 as f32,
+            param3: value.param3 as f32,
+            param4: value.param4 as f32,
+            auto_continue: value.auto_continue,
+            is_current: value.is_current,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct MissionPlan {
+    pub plan_id: String,
+    pub revision: u32,
+    pub items: Vec<MissionItem>,
+    pub home: Option<MissionCoordinate>,
+    pub last_modified_millis: i64,
+    pub notes: Option<String>,
+}
+
+impl From<domain::MissionPlan> for MissionPlan {
+    fn from(value: domain::MissionPlan) -> Self {
+        Self {
+            plan_id: value.plan_id,
+            revision: value.revision,
+            items: value.items.into_iter().map(Into::into).collect(),
+            home: value.home.map(Into::into),
+            last_modified_millis: value.last_modified_millis,
+            notes: value.notes,
+        }
+    }
+}
+
+impl From<MissionPlan> for domain::MissionPlan {
+    fn from(value: MissionPlan) -> Self {
+        let plan = domain::MissionPlan {
+            plan_id: value.plan_id,
+            revision: value.revision,
+            items: value.items.into_iter().map(Into::into).collect(),
+            home: value.home.map(Into::into),
+            last_modified_millis: value.last_modified_millis,
+            notes: value.notes,
+        };
+        plan
+    }
+}
+
+#[napi(string_enum)]
+pub enum MissionSyncStage {
+    Idle,
+    Downloading,
+    Uploading,
+    AwaitingAck,
+    Completed,
+    Failed,
+}
+
+impl From<domain::MissionSyncStage> for MissionSyncStage {
+    fn from(value: domain::MissionSyncStage) -> Self {
+        match value {
+            domain::MissionSyncStage::Idle => Self::Idle,
+            domain::MissionSyncStage::Downloading => Self::Downloading,
+            domain::MissionSyncStage::Uploading => Self::Uploading,
+            domain::MissionSyncStage::AwaitingAck => Self::AwaitingAck,
+            domain::MissionSyncStage::Completed => Self::Completed,
+            domain::MissionSyncStage::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<MissionSyncStage> for domain::MissionSyncStage {
+    fn from(value: MissionSyncStage) -> Self {
+        match value {
+            MissionSyncStage::Idle => Self::Idle,
+            MissionSyncStage::Downloading => Self::Downloading,
+            MissionSyncStage::Uploading => Self::Uploading,
+            MissionSyncStage::AwaitingAck => Self::AwaitingAck,
+            MissionSyncStage::Completed => Self::Completed,
+            MissionSyncStage::Failed => Self::Failed,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct MissionSyncStatus {
+    pub stage: MissionSyncStage,
+    pub index: Option<u16>,
+    pub total: Option<u16>,
+    pub message: Option<String>,
+}
+
+impl From<domain::MissionSyncStatus> for MissionSyncStatus {
+    fn from(value: domain::MissionSyncStatus) -> Self {
+        Self {
+            stage: value.stage.into(),
+            index: value.index,
+            total: value.total,
+            message: value.message,
+        }
+    }
+}
+
+#[napi(string_enum)]
+pub enum MissionOperationKind {
+    Upload,
+    Download,
+}
+
+impl From<domain::MissionOperationKind> for MissionOperationKind {
+    fn from(value: domain::MissionOperationKind) -> Self {
+        match value {
+            domain::MissionOperationKind::Upload => Self::Upload,
+            domain::MissionOperationKind::Download => Self::Download,
+        }
+    }
+}
+
+#[napi(string_enum)]
+pub enum MissionOperationStatus {
+    Success,
+    Failed,
+    Cancelled,
+}
+
+impl From<domain::MissionOperationStatus> for MissionOperationStatus {
+    fn from(value: domain::MissionOperationStatus) -> Self {
+        match value {
+            domain::MissionOperationStatus::Success => Self::Success,
+            domain::MissionOperationStatus::Failed => Self::Failed,
+            domain::MissionOperationStatus::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct MissionOperationReport {
+    pub operation: MissionOperationKind,
+    pub status: MissionOperationStatus,
+    pub message: Option<String>,
+    pub revision: u32,
+}
+
+impl From<domain::MissionOperationReport> for MissionOperationReport {
+    fn from(value: domain::MissionOperationReport) -> Self {
+        Self {
+            operation: value.operation.into(),
+            status: value.status.into(),
+            message: value.message,
+            revision: value.revision,
+        }
+    }
+}
+
 fn health_check_impl() -> CoreResult<StatusMessage> {
     Ok(StatusMessage::new("health", "rust-core napi module loaded"))
 }
@@ -494,6 +748,37 @@ pub fn cached_parameters() -> Result<Vec<ParameterValue>> {
         .into_iter()
         .map(Into::into)
         .collect())
+}
+
+#[napi]
+pub fn current_mission_plan() -> Result<MissionPlan> {
+    Ok(mav_manager().mission_plan().into())
+}
+
+#[napi]
+pub fn cached_mission_plan() -> Result<MissionPlan> {
+    Ok(mav_manager().cached_mission_plan().into())
+}
+
+#[napi]
+pub async fn download_mission(timeout_ms: Option<u32>) -> Result<MissionPlan> {
+    let timeout = timeout_ms.map(|value| Duration::from_millis(value as u64));
+    let plan = mav_manager()
+        .download_mission(timeout)
+        .await
+        .map_err::<Error, _>(Into::into)?;
+    Ok(plan.into())
+}
+
+#[napi]
+pub async fn upload_mission(plan: MissionPlan, timeout_ms: Option<u32>) -> Result<MissionPlan> {
+    let timeout = timeout_ms.map(|value| Duration::from_millis(value as u64));
+    let domain_plan: domain::MissionPlan = plan.into();
+    let result = mav_manager()
+        .upload_mission(domain_plan, timeout)
+        .await
+        .map_err::<Error, _>(Into::into)?;
+    Ok(result.into())
 }
 
 fn descriptor_from_options(options: &ConnectOptions) -> CoreResult<domain::DeviceDescriptor> {

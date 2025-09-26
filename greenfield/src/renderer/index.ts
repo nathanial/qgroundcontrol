@@ -1,11 +1,22 @@
+import maplibregl from 'maplibre-gl';
 import type {
   DeviceDescriptor,
   ConnectionStatus,
   ParameterValue,
   VehicleStatus,
-  StatusMessage
+  StatusMessage,
+  MissionPlan,
+  MissionItem,
+  MissionSyncStatus,
+  MissionOperationReport
 } from '../../rust-core/index';
-import { appStore, type ParameterProgressState, type LogEntry } from './state/store';
+import { MissionFrame } from '../../rust-core/index';
+import {
+  appStore,
+  createMissionDraftSkeleton,
+  type ParameterProgressState,
+  type LogEntry
+} from './state/store';
 
 type RustEnvelope = {
   level?: string;
@@ -31,6 +42,10 @@ type BackendAPI = {
   fetchParameters(timeoutMs?: number): Promise<ParameterValue[]>;
   getConnectionStatus(): Promise<ConnectionStatus>;
   getCachedParameters(): Promise<ParameterValue[]>;
+  getMissionPlan(): Promise<MissionPlan>;
+  getCachedMissionPlan(): Promise<MissionPlan>;
+  downloadMission(timeoutMs?: number): Promise<MissionPlan>;
+  uploadMission(plan: MissionPlan, timeoutMs?: number): Promise<MissionPlan>;
 };
 
 const backend = window.backend as unknown as BackendAPI;
@@ -58,9 +73,24 @@ const simulateFailureButton = document.getElementById('simulate-failure');
 const refreshDevicesButton = document.getElementById('refresh-devices');
 const disconnectButton = document.getElementById('disconnect-link');
 const fetchParametersButton = document.getElementById('fetch-parameters');
+const missionStatusContainer = document.getElementById('mission-status');
+const missionTableBody = document.getElementById('mission-table-body');
+const missionEmptyState = document.getElementById('mission-empty');
+const missionDownloadButton = document.getElementById('mission-download');
+const missionUploadButton = document.getElementById('mission-upload');
+const missionAddButton = document.getElementById('mission-add-waypoint');
+const missionPatternButton = document.getElementById('mission-generate-pattern');
+const missionSyncBadge = document.getElementById('mission-sync-status');
+const missionMapContainer = document.getElementById('mission-map');
 
 const unsubscribes: Array<() => void> = [];
 let parameterFilter = '';
+const missionSourceId = 'mission-plan';
+const missionLineLayerId = 'mission-plan-line';
+const missionPointLayerId = 'mission-plan-points';
+let missionMap: maplibregl.Map | null = null;
+let missionMapReady = false;
+const DEFAULT_MISSION_ALTITUDE = 50;
 
 if (statusBadge) {
   statusBadge.textContent = 'Awaiting core signal…';
@@ -69,6 +99,7 @@ if (statusBadge) {
 function init(): void {
   setupStoreSubscriptions();
   setupUiHandlers();
+  initializeMissionPlanner();
   setupBackendSubscriptions();
   bootstrapState();
 }
@@ -119,6 +150,30 @@ function setupStoreSubscriptions(): void {
     )
   );
 
+  unsubscribes.push(
+    store.subscribe(
+      (state) => state.missionDraft,
+      (plan) => {
+        renderMissionPlan(plan);
+        updateMissionMap(plan);
+      }
+    )
+  );
+
+  unsubscribes.push(
+    store.subscribe(
+      (state) => state.missionSync,
+      (status) => renderMissionSync(status)
+    )
+  );
+
+  unsubscribes.push(
+    store.subscribe(
+      (state) => state.selectedMissionIndex,
+      (index) => highlightSelectedMissionRow(index)
+    )
+  );
+
   const current = store.getState();
   renderDeviceTable(current.devices);
   renderConnectionStatus(current.connectionStatus);
@@ -127,6 +182,10 @@ function setupStoreSubscriptions(): void {
   renderParameterStats(current.parameterProgress);
   renderParameterTable(current.parameterValues);
   renderLogs(current.logs);
+  renderMissionPlan(current.missionDraft ?? current.missionPlan);
+  renderMissionSync(current.missionSync);
+  updateMissionMap(current.missionDraft ?? current.missionPlan);
+  highlightSelectedMissionRow(current.selectedMissionIndex);
 }
 
 function setupUiHandlers(): void {
@@ -168,6 +227,30 @@ function setupUiHandlers(): void {
   if (fetchParametersButton) {
     fetchParametersButton.addEventListener('click', () => {
       void handleFetchParameters();
+    });
+  }
+
+  if (missionDownloadButton) {
+    missionDownloadButton.addEventListener('click', () => {
+      void handleMissionDownload();
+    });
+  }
+
+  if (missionUploadButton) {
+    missionUploadButton.addEventListener('click', () => {
+      void handleMissionUpload();
+    });
+  }
+
+  if (missionAddButton) {
+    missionAddButton.addEventListener('click', () => {
+      handleAddWaypoint();
+    });
+  }
+
+  if (missionPatternButton) {
+    missionPatternButton.addEventListener('click', () => {
+      handleGeneratePattern();
     });
   }
 }
@@ -226,6 +309,18 @@ async function bootstrapState(): Promise<void> {
       })
       .catch((error) => {
         logMessage('warn', `Failed to load cached parameters: ${(error as Error).message}`);
+      }),
+    backend
+      .getMissionPlan()
+      .then((plan) => store.getState().setMissionPlan(plan))
+      .catch((error) => {
+        logMessage('warn', `Failed to fetch mission plan: ${(error as Error).message}`);
+        return backend
+          .getCachedMissionPlan()
+          .then((plan) => store.getState().setMissionPlan(plan))
+          .catch((cachedError) => {
+            logMessage('debug', `No cached mission plan available: ${(cachedError as Error).message}`);
+          });
       })
   ]);
 }
@@ -266,6 +361,334 @@ async function handleFetchParameters(): Promise<void> {
   } catch (error) {
     logMessage('error', `fetchParameters failed: ${(error as Error).message}`);
   }
+}
+
+function initializeMissionPlanner(): void {
+  if (!missionMapContainer || missionMap) {
+    return;
+  }
+
+  missionMap = new maplibregl.Map({
+    container: missionMapContainer,
+    style: 'https://demotiles.maplibre.org/style.json',
+    center: [-121.8947, 37.3349],
+    zoom: 13,
+    pitch: 0,
+    attributionControl: false
+  });
+
+  missionMap.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-right');
+
+  missionMap.on('load', () => {
+    missionMapReady = true;
+    if (!missionMap) {
+      return;
+    }
+    missionMap.addSource(missionSourceId, {
+      type: 'geojson',
+      data: createMissionGeoJson(store.getState().missionDraft ?? store.getState().missionPlan)
+    });
+
+    missionMap.addLayer({
+      id: missionLineLayerId,
+      type: 'line',
+      source: missionSourceId,
+      paint: {
+        'line-color': '#60a5fa',
+        'line-width': 3
+      }
+    });
+
+    missionMap.addLayer({
+      id: missionPointLayerId,
+      type: 'circle',
+      source: missionSourceId,
+      paint: {
+        'circle-radius': 6,
+        'circle-color': '#fbbf24',
+        'circle-stroke-width': 1,
+        'circle-stroke-color': '#1f2937'
+      }
+    });
+
+    updateMissionMap(store.getState().missionDraft ?? store.getState().missionPlan);
+  });
+
+  missionMap.on('click', (event) => {
+    store.getState().addMissionWaypoint({
+      latitudeDeg: event.lngLat.lat,
+      longitudeDeg: event.lngLat.lng
+    });
+  });
+}
+
+async function handleMissionDownload(): Promise<void> {
+  try {
+    const plan = await backend.downloadMission(15_000);
+    store.getState().setMissionPlan(plan);
+    logMessage('info', `Mission download complete (${plan.items.length} waypoints)`);
+  } catch (error) {
+    logMessage('error', `Mission download failed: ${(error as Error).message}`);
+  }
+}
+
+async function handleMissionUpload(): Promise<void> {
+  const draft = store.getState().missionDraft;
+  if (!draft) {
+    logMessage('warn', 'No mission draft available for upload');
+    return;
+  }
+
+  try {
+    const result = await backend.uploadMission(draft, 15_000);
+    store.getState().setMissionPlan(result);
+    logMessage('info', `Mission upload acknowledged (revision ${result.revision})`);
+  } catch (error) {
+    logMessage('error', `Mission upload failed: ${(error as Error).message}`);
+  }
+}
+
+function handleAddWaypoint(): void {
+  const center = missionMap?.getCenter();
+  const latitude = center?.lat ?? 37.3349;
+  const longitude = center?.lng ?? -121.8947;
+  store.getState().addMissionWaypoint({ latitudeDeg: latitude, longitudeDeg: longitude });
+}
+
+function handleGeneratePattern(): void {
+  const center = missionMap?.getCenter();
+  if (!center) {
+    logMessage('warn', 'Mission map not ready yet');
+    return;
+  }
+
+  const base = store.getState().missionDraft ?? store.getState().missionPlan;
+  const altitude = base?.items?.[0]?.altitudeM ?? DEFAULT_MISSION_ALTITUDE;
+  const plan = createMissionDraftSkeleton(base);
+
+  const pattern = buildSquarePattern(center.lat, center.lng, altitude);
+  plan.items = pattern.map((point, index) => ({
+    seq: index,
+    command: 16,
+    frame: MissionFrame.GlobalRelativeAlt,
+    latitudeDeg: point.latitudeDeg,
+    longitudeDeg: point.longitudeDeg,
+    altitudeM: point.altitudeM,
+    param1: 0,
+    param2: 0,
+    param3: 0,
+    param4: 0,
+    autoContinue: true,
+    isCurrent: index === 0
+  }));
+
+  store.getState().setMissionDraft(plan);
+  logMessage('info', 'Generated square survey pattern around map center');
+}
+
+function buildSquarePattern(lat: number, lon: number, altitude: number): Array<{
+  latitudeDeg: number;
+  longitudeDeg: number;
+  altitudeM: number;
+}> {
+  const sizeMeters = 120;
+  const latOffset = (sizeMeters / 2) / 111_320;
+  const lonOffset = (sizeMeters / 2) / (111_320 * Math.cos((lat * Math.PI) / 180));
+
+  return [
+    { latitudeDeg: lat + latOffset, longitudeDeg: lon - lonOffset, altitudeM: altitude },
+    { latitudeDeg: lat + latOffset, longitudeDeg: lon + lonOffset, altitudeM: altitude },
+    { latitudeDeg: lat - latOffset, longitudeDeg: lon + lonOffset, altitudeM: altitude },
+    { latitudeDeg: lat - latOffset, longitudeDeg: lon - lonOffset, altitudeM: altitude }
+  ];
+}
+
+function renderMissionPlan(plan: MissionPlan | null | undefined): void {
+  if (!missionTableBody || !missionEmptyState) {
+    return;
+  }
+
+  missionTableBody.innerHTML = '';
+
+  if (!plan || plan.items.length === 0) {
+    missionEmptyState.classList.remove('hidden');
+    return;
+  }
+
+  missionEmptyState.classList.add('hidden');
+  const fragment = document.createDocumentFragment();
+  const selected = store.getState().selectedMissionIndex;
+
+  plan.items.forEach((item, index) => {
+    const tr = document.createElement('tr');
+    tr.dataset.index = index.toString();
+    if (selected === index) {
+      tr.dataset.selected = 'true';
+    }
+
+    const seqCell = document.createElement('td');
+    seqCell.textContent = (index + 1).toString();
+
+    const latCell = document.createElement('td');
+    latCell.textContent = formatCoordinate(item.latitudeDeg, 'lat');
+
+    const lonCell = document.createElement('td');
+    lonCell.textContent = formatCoordinate(item.longitudeDeg, 'lon');
+
+    const altitudeCell = document.createElement('td');
+    const altitudeInput = document.createElement('input');
+    altitudeInput.type = 'number';
+    altitudeInput.className = 'mission-alt-input';
+    altitudeInput.value = item.altitudeM.toFixed(1);
+    altitudeInput.addEventListener('change', (event) => {
+      const next = parseFloat((event.target as HTMLInputElement).value);
+      if (!Number.isFinite(next)) {
+        return;
+      }
+      store.getState().updateMissionItem(index, { altitudeM: next });
+    });
+    altitudeCell.appendChild(altitudeInput);
+
+    const actionsCell = document.createElement('td');
+    const removeButton = document.createElement('button');
+    removeButton.textContent = 'Remove';
+    removeButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      store.getState().removeMissionWaypoint(index);
+    });
+    actionsCell.appendChild(removeButton);
+
+    tr.append(seqCell, latCell, lonCell, altitudeCell, actionsCell);
+    tr.addEventListener('click', () => {
+      store.getState().setSelectedMissionIndex(index);
+    });
+
+    fragment.appendChild(tr);
+  });
+
+  missionTableBody.appendChild(fragment);
+}
+
+function renderMissionSync(status: MissionSyncStatus | null | undefined): void {
+  if (missionSyncBadge) {
+    if (!status) {
+      missionSyncBadge.textContent = 'Idle';
+      missionSyncBadge.removeAttribute('data-stage');
+    } else {
+      missionSyncBadge.textContent = status.stage;
+      missionSyncBadge.dataset.stage = status.stage.toLowerCase();
+    }
+  }
+
+  if (missionStatusContainer) {
+    if (!status) {
+      missionStatusContainer.textContent = 'Mission idle';
+    } else {
+      const progress = status.total ? `${status.index ?? 0}/${status.total}` : status.index?.toString() ?? '—';
+      const detail = status.message ? ` • ${status.message}` : '';
+      missionStatusContainer.textContent = `${status.stage}${progress ? ` (${progress})` : ''}${detail}`;
+    }
+  }
+}
+
+function highlightSelectedMissionRow(index: number | null): void {
+  if (!missionTableBody) {
+    return;
+  }
+
+  missionTableBody.querySelectorAll('tr').forEach((row, rowIndex) => {
+    if (rowIndex === index) {
+      row.dataset.selected = 'true';
+    } else {
+      row.removeAttribute('data-selected');
+    }
+  });
+
+  if (index != null) {
+    const plan = store.getState().missionDraft ?? store.getState().missionPlan;
+    const waypoint = plan?.items[index];
+    if (missionMap && missionMapReady && waypoint) {
+      missionMap.easeTo({
+        center: [waypoint.longitudeDeg, waypoint.latitudeDeg],
+        duration: 300
+      });
+    }
+  }
+}
+
+function updateMissionMap(plan: MissionPlan | null | undefined): void {
+  if (!missionMap || !missionMapReady) {
+    return;
+  }
+
+  const source = missionMap.getSource(missionSourceId) as maplibregl.GeoJSONSource | undefined;
+  const data = createMissionGeoJson(plan ?? null);
+
+  if (source) {
+    source.setData(data);
+  }
+
+  if (plan && plan.items.length > 0) {
+    fitMapToMission(plan);
+  }
+}
+
+function fitMapToMission(plan: MissionPlan): void {
+  if (!missionMap || !missionMapReady || plan.items.length === 0) {
+    return;
+  }
+
+  const bounds = plan.items.reduce((acc, item) => {
+    acc.extend([item.longitudeDeg, item.latitudeDeg]);
+    return acc;
+  }, new maplibregl.LngLatBounds());
+
+  if (bounds.isEmpty()) {
+    missionMap.easeTo({
+      center: [plan.items[0].longitudeDeg, plan.items[0].latitudeDeg],
+      duration: 0
+    });
+  } else {
+    missionMap.fitBounds(bounds, { padding: 48, maxZoom: 18, duration: 400 });
+  }
+}
+
+function createMissionGeoJson(plan: MissionPlan | null): GeoJSON.FeatureCollection {
+  if (!plan || plan.items.length === 0) {
+    return { type: 'FeatureCollection', features: [] };
+  }
+
+  const lineFeature: GeoJSON.Feature<GeoJSON.LineString> = {
+    type: 'Feature',
+    geometry: {
+      type: 'LineString',
+      coordinates: plan.items.map((item) => [item.longitudeDeg, item.latitudeDeg])
+    },
+    properties: {}
+  };
+
+  const pointFeatures: GeoJSON.Feature<GeoJSON.Point>[] = plan.items.map((item, index) => ({
+    type: 'Feature',
+    geometry: {
+      type: 'Point',
+      coordinates: [item.longitudeDeg, item.latitudeDeg]
+    },
+    properties: {
+      seq: item.seq,
+      label: `WP${index + 1}`,
+      altitude: item.altitudeM
+    }
+  }));
+
+  return {
+    type: 'FeatureCollection',
+    features: [lineFeature, ...pointFeatures]
+  };
+}
+
+function formatCoordinate(value: number, kind: 'lat' | 'lon'): string {
+  const hemisphere = kind === 'lat' ? (value >= 0 ? 'N' : 'S') : value >= 0 ? 'E' : 'W';
+  return `${Math.abs(value).toFixed(6)}° ${hemisphere}`;
 }
 
 function handleCoreEvent(event: CoreEvent): void {
@@ -331,6 +754,31 @@ function handleCoreEvent(event: CoreEvent): void {
       const parameters = (event.parameters as ParameterValue[]) ?? [];
       store.getState().setParameterValues(parameters, Date.now());
       logMessage('info', `Parameter batch received (${parameters.length} values)`);
+      break;
+    }
+    case 'mission_plan': {
+      const plan = event.plan as MissionPlan | undefined;
+      if (plan) {
+        store.getState().setMissionPlan(plan);
+        logMessage('info', `Mission plan updated (${plan.items.length} items)`);
+      }
+      break;
+    }
+    case 'mission_sync': {
+      const status = event.status as MissionSyncStatus | undefined;
+      if (status) {
+        store.getState().setMissionSync(status);
+      }
+      break;
+    }
+    case 'mission_operation': {
+      const report = event.report as MissionOperationReport | undefined;
+      if (report) {
+        const status = String(report.status).toLowerCase();
+        const operation = String(report.operation).toLowerCase();
+        const detail = report.message ? `: ${report.message}` : '';
+        logMessage(status === 'success' ? 'info' : status, `Mission ${operation} ${status}${detail}`);
+      }
       break;
     }
     default: {

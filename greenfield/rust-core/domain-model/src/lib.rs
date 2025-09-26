@@ -203,6 +203,153 @@ impl ParameterValue {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MissionFrame {
+    Global,
+    GlobalRelativeAlt,
+    GlobalTerrainAlt,
+    Mission,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MissionSyncStage {
+    Idle,
+    Downloading,
+    Uploading,
+    AwaitingAck,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MissionOperationKind {
+    Upload,
+    Download,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MissionOperationStatus {
+    Success,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MissionOperationReport {
+    pub operation: MissionOperationKind,
+    pub status: MissionOperationStatus,
+    pub message: Option<String>,
+    pub revision: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MissionSyncStatus {
+    pub stage: MissionSyncStage,
+    pub index: Option<u16>,
+    pub total: Option<u16>,
+    pub message: Option<String>,
+}
+
+impl MissionSyncStatus {
+    pub fn new(stage: MissionSyncStage) -> Self {
+        Self {
+            stage,
+            index: None,
+            total: None,
+            message: None,
+        }
+    }
+
+    pub fn with_progress(mut self, index: Option<u16>, total: Option<u16>) -> Self {
+        self.index = index;
+        self.total = total;
+        self
+    }
+
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MissionCoordinate {
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub altitude_m: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MissionItem {
+    pub seq: u16,
+    pub command: u16,
+    pub frame: MissionFrame,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub altitude_m: f32,
+    pub param1: f32,
+    pub param2: f32,
+    pub param3: f32,
+    pub param4: f32,
+    pub auto_continue: bool,
+    pub is_current: bool,
+}
+
+impl MissionItem {
+    pub fn new(seq: u16, latitude: f64, longitude: f64, altitude: f32) -> Self {
+        Self {
+            seq,
+            command: 16,
+            frame: MissionFrame::GlobalRelativeAlt,
+            latitude_deg: latitude,
+            longitude_deg: longitude,
+            altitude_m: altitude,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            param4: 0.0,
+            auto_continue: true,
+            is_current: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MissionPlan {
+    pub plan_id: String,
+    pub revision: u32,
+    pub items: Vec<MissionItem>,
+    pub home: Option<MissionCoordinate>,
+    pub last_modified_millis: i64,
+    pub notes: Option<String>,
+}
+
+impl MissionPlan {
+    pub fn new(plan_id: impl Into<String>) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        Self {
+            plan_id: plan_id.into(),
+            revision: 0,
+            items: Vec::new(),
+            home: None,
+            last_modified_millis: now,
+            notes: None,
+        }
+    }
+
+    pub fn with_items(mut self, items: Vec<MissionItem>) -> Self {
+        self.items = items;
+        self.last_modified_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        self
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DomainError {
     #[error("vehicle not found: {0}")]

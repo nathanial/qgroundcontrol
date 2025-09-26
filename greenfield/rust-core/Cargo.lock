@@ -603,6 +603,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "num-traits",
  "once_cell",
  "parking_lot",
  "qgc-domain",

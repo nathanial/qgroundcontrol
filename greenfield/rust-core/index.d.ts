@@ -15,6 +15,8 @@ export interface BatteryStatus {
 
 export declare export declare function bootstrapVehicleStatus(): VehicleStatus
 
+export declare export declare function cachedMissionPlan(): MissionPlan
+
 export declare export declare function cachedParameters(): Array<ParameterValue>
 
 export declare const enum ConnectionPhase {
@@ -49,6 +51,8 @@ export interface ConnectOptions {
 
 export declare export declare function currentConnectionStatus(): ConnectionStatus
 
+export declare export declare function currentMissionPlan(): MissionPlan
+
 export declare export declare function describeStatusChannel(): string
 
 export interface DeviceDescriptor {
@@ -66,6 +70,8 @@ export interface DeviceDescriptor {
 }
 
 export declare export declare function disconnectMavlink(): Promise<void>
+
+export declare export declare function downloadMission(timeoutMs?: number | undefined | null): Promise<MissionPlan>
 
 export declare export declare function fetchParameters(timeoutMs?: number | undefined | null): Promise<Array<ParameterValue>>
 
@@ -107,6 +113,77 @@ export declare const enum LinkKind {
 
 export declare export declare function listDevices(): Array<DeviceDescriptor>
 
+export interface MissionCoordinate {
+  latitudeDeg: number
+  longitudeDeg: number
+  altitudeM: number
+}
+
+export declare const enum MissionFrame {
+  Global = 'Global',
+  GlobalRelativeAlt = 'GlobalRelativeAlt',
+  GlobalTerrainAlt = 'GlobalTerrainAlt',
+  Mission = 'Mission'
+}
+
+export interface MissionItem {
+  seq: number
+  command: number
+  frame: MissionFrame
+  latitudeDeg: number
+  longitudeDeg: number
+  altitudeM: number
+  param1: number
+  param2: number
+  param3: number
+  param4: number
+  autoContinue: boolean
+  isCurrent: boolean
+}
+
+export declare const enum MissionOperationKind {
+  Upload = 'Upload',
+  Download = 'Download'
+}
+
+export interface MissionOperationReport {
+  operation: MissionOperationKind
+  status: MissionOperationStatus
+  message?: string
+  revision: number
+}
+
+export declare const enum MissionOperationStatus {
+  Success = 'Success',
+  Failed = 'Failed',
+  Cancelled = 'Cancelled'
+}
+
+export interface MissionPlan {
+  planId: string
+  revision: number
+  items: Array<MissionItem>
+  home?: MissionCoordinate
+  lastModifiedMillis: number
+  notes?: string
+}
+
+export declare const enum MissionSyncStage {
+  Idle = 'Idle',
+  Downloading = 'Downloading',
+  Uploading = 'Uploading',
+  AwaitingAck = 'AwaitingAck',
+  Completed = 'Completed',
+  Failed = 'Failed'
+}
+
+export interface MissionSyncStatus {
+  stage: MissionSyncStage
+  index?: number
+  total?: number
+  message?: string
+}
+
 export interface ParameterValue {
   name: string
   value: number
@@ -127,6 +204,8 @@ export interface StatusMessage {
   kind: string
   message: string
 }
+
+export declare export declare function uploadMission(plan: MissionPlan, timeoutMs?: number | undefined | null): Promise<MissionPlan>
 
 export interface VehicleStatus {
   vehicleId: string

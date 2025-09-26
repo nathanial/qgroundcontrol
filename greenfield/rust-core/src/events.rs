@@ -40,6 +40,15 @@ pub enum CoreEvent {
         level: domain::LogLevel,
         message: String,
     },
+    MissionPlan {
+        plan: domain::MissionPlan,
+    },
+    MissionSync {
+        status: domain::MissionSyncStatus,
+    },
+    MissionOperation {
+        report: domain::MissionOperationReport,
+    },
 }
 
 static EVENT_SINK: Lazy<RwLock<Option<ThreadsafeFunction<serde_json::Value>>>> =
@@ -79,4 +88,16 @@ pub fn emit_log(level: domain::LogLevel, source: &str, message: impl Into<String
     };
 
     emit(CoreEvent::MissionLog { entry });
+}
+
+pub fn emit_mission_plan(plan: domain::MissionPlan) {
+    emit(CoreEvent::MissionPlan { plan });
+}
+
+pub fn emit_mission_sync(status: domain::MissionSyncStatus) {
+    emit(CoreEvent::MissionSync { status });
+}
+
+pub fn emit_mission_operation(report: domain::MissionOperationReport) {
+    emit(CoreEvent::MissionOperation { report });
 }

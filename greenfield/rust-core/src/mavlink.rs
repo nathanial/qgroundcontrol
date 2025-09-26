@@ -1,8 +1,12 @@
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use mavlink::common::{self, MavMessage, MavModeFlag, MavState, MavType};
+use mavlink::common::{
+    self, MavCmd, MavFrame, MavMessage, MavMissionResult, MavModeFlag, MavState, MavType,
+};
 use mavlink::connect_async;
+use num_traits::FromPrimitive;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use qgc_domain as domain;
@@ -12,6 +16,7 @@ use crate::error::{invalid_argument, timeout, CoreError, CoreResult};
 use crate::events::{self, CoreEvent};
 
 const DEFAULT_PARAMETER_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_MISSION_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub enum LinkConfig {
@@ -71,6 +76,45 @@ impl PendingParameters {
     }
 }
 
+struct MissionUploadState {
+    respond_to: oneshot::Sender<CoreResult<domain::MissionPlan>>,
+    plan: domain::MissionPlan,
+    previous_plan: domain::MissionPlan,
+    next_seq: u16,
+    total: u16,
+    target_system: u8,
+    target_component: u8,
+}
+
+struct MissionDownloadState {
+    respond_to: oneshot::Sender<CoreResult<domain::MissionPlan>>,
+    plan_id: String,
+    items: Vec<domain::MissionItem>,
+    expected: Option<u16>,
+    next_request: u16,
+    total: u16,
+    target_system: u8,
+    target_component: u8,
+}
+
+enum MissionTaskState {
+    Upload(MissionUploadState),
+    Download(MissionDownloadState),
+}
+
+struct MissionTask {
+    deadline: Instant,
+    state: MissionTaskState,
+}
+
+impl MissionDownloadState {
+    fn as_plan(&self) -> domain::MissionPlan {
+        let mut plan = domain::MissionPlan::new(self.plan_id.clone());
+        plan.items = self.items.clone();
+        plan
+    }
+}
+
 struct SessionState {
     descriptor: domain::DeviceDescriptor,
     status: RwLock<domain::ConnectionStatus>,
@@ -79,6 +123,9 @@ struct SessionState {
     last_heartbeat: Mutex<Option<Instant>>,
     parameter_cache: RwLock<Vec<domain::ParameterValue>>,
     pending_parameters: Mutex<Option<PendingParameters>>,
+    mission_plan: RwLock<domain::MissionPlan>,
+    mission_revision: AtomicU32,
+    pending_mission: Mutex<Option<MissionTask>>,
 }
 
 impl SessionState {
@@ -86,6 +133,7 @@ impl SessionState {
         let mut vehicle_status =
             domain::VehicleStatus::new(domain::VehicleId(descriptor.id.clone()));
         vehicle_status.vehicle_type = domain::VehicleType::Unknown;
+        let plan_id = format!("mission-{}", descriptor.id);
         Arc::new(Self {
             status: RwLock::new(
                 domain::ConnectionStatus::new(domain::ConnectionPhase::Connecting)
@@ -97,6 +145,9 @@ impl SessionState {
             last_heartbeat: Mutex::new(None),
             parameter_cache: RwLock::new(Vec::new()),
             pending_parameters: Mutex::new(None),
+            mission_plan: RwLock::new(domain::MissionPlan::new(plan_id)),
+            mission_revision: AtomicU32::new(0),
+            pending_mission: Mutex::new(None),
         })
     }
 
@@ -207,6 +258,208 @@ impl SessionState {
     fn parameter_cache(&self) -> Vec<domain::ParameterValue> {
         self.parameter_cache.read().clone()
     }
+
+    fn mission_plan(&self) -> domain::MissionPlan {
+        let mut plan = self.mission_plan.read().clone();
+        plan.revision = self.mission_revision.load(Ordering::SeqCst);
+        plan
+    }
+
+    fn mission_revision(&self) -> u32 {
+        self.mission_revision.load(Ordering::SeqCst)
+    }
+
+    fn replace_mission_plan(&self, mut plan: domain::MissionPlan) -> domain::MissionPlan {
+        if plan.plan_id.is_empty() {
+            plan.plan_id = self.mission_plan.read().plan_id.clone();
+        }
+
+        let sanitized = normalize_mission_plan(plan);
+        let revision = self.mission_revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut stored = sanitized.clone();
+        stored.revision = revision;
+        stored.last_modified_millis = current_millis();
+        {
+            let mut guard = self.mission_plan.write();
+            *guard = stored.clone();
+        }
+        events::emit_mission_plan(stored.clone());
+        stored
+    }
+
+    fn start_mission_upload(
+        &self,
+        plan: domain::MissionPlan,
+        timeout: Duration,
+        respond_to: oneshot::Sender<CoreResult<domain::MissionPlan>>,
+        target_system: u8,
+        target_component: u8,
+    ) -> Result<(), oneshot::Sender<CoreResult<domain::MissionPlan>>> {
+        let mut guard = self.pending_mission.lock();
+        if guard.is_some() {
+            return Err(respond_to);
+        }
+
+        let plan = normalize_mission_plan(plan);
+        let previous_plan = self.mission_plan.read().clone();
+        let total = plan.items.len() as u16;
+
+        *guard = Some(MissionTask {
+            deadline: Instant::now() + timeout,
+            state: MissionTaskState::Upload(MissionUploadState {
+                respond_to,
+                plan,
+                previous_plan,
+                next_seq: 0,
+                total,
+                target_system,
+                target_component,
+            }),
+        });
+
+        events::emit_mission_sync(
+            domain::MissionSyncStatus::new(domain::MissionSyncStage::Uploading)
+                .with_progress(Some(0), Some(total)),
+        );
+
+        Ok(())
+    }
+
+    fn start_mission_download(
+        &self,
+        timeout: Duration,
+        respond_to: oneshot::Sender<CoreResult<domain::MissionPlan>>,
+        target_system: u8,
+        target_component: u8,
+    ) -> Result<(), oneshot::Sender<CoreResult<domain::MissionPlan>>> {
+        let mut guard = self.pending_mission.lock();
+        if guard.is_some() {
+            return Err(respond_to);
+        }
+
+        let plan_id = format!("mission-{}-dl", current_millis());
+
+        *guard = Some(MissionTask {
+            deadline: Instant::now() + timeout,
+            state: MissionTaskState::Download(MissionDownloadState {
+                respond_to,
+                plan_id,
+                items: Vec::new(),
+                expected: None,
+                next_request: 0,
+                total: 0,
+                target_system,
+                target_component,
+            }),
+        });
+
+        events::emit_mission_sync(
+            domain::MissionSyncStatus::new(domain::MissionSyncStage::Downloading)
+                .with_progress(Some(0), None),
+        );
+
+        Ok(())
+    }
+
+    fn mission_task_mut<R>(&self, f: impl FnOnce(&mut MissionTask) -> R) -> Option<R> {
+        let mut guard = self.pending_mission.lock();
+        guard.as_mut().map(f)
+    }
+
+    fn take_mission_task(&self) -> Option<MissionTask> {
+        self.pending_mission.lock().take()
+    }
+
+    fn mission_task_expire_if_needed(&self) {
+        let expired = {
+            let mut guard = self.pending_mission.lock();
+            if guard
+                .as_ref()
+                .map(|task| Instant::now() > task.deadline)
+                .unwrap_or(false)
+            {
+                guard.take()
+            } else {
+                None
+            }
+        };
+
+        if let Some(task) = expired {
+            self.resolve_mission_failure(task, timeout(DEFAULT_MISSION_TIMEOUT));
+        }
+    }
+
+    fn resolve_mission_success(&self, task: MissionTask, mut plan: domain::MissionPlan) {
+        match task.state {
+            MissionTaskState::Upload(upload) => {
+                plan = normalize_mission_plan(plan);
+                let stored = self.replace_mission_plan(plan);
+                events::emit_mission_sync(
+                    domain::MissionSyncStatus::new(domain::MissionSyncStage::Completed)
+                        .with_progress(Some(upload.total), Some(upload.total)),
+                );
+                events::emit_mission_operation(domain::MissionOperationReport {
+                    operation: domain::MissionOperationKind::Upload,
+                    status: domain::MissionOperationStatus::Success,
+                    message: Some("Mission upload acknowledged".into()),
+                    revision: stored.revision,
+                });
+                let _ = upload.respond_to.send(Ok(stored));
+            }
+            MissionTaskState::Download(download) => {
+                if plan.plan_id.is_empty() {
+                    plan.plan_id = download.plan_id.clone();
+                }
+                plan = normalize_mission_plan(plan);
+                let stored = self.replace_mission_plan(plan);
+                events::emit_mission_sync(
+                    domain::MissionSyncStatus::new(domain::MissionSyncStage::Completed)
+                        .with_progress(Some(download.total), Some(download.total)),
+                );
+                events::emit_mission_operation(domain::MissionOperationReport {
+                    operation: domain::MissionOperationKind::Download,
+                    status: domain::MissionOperationStatus::Success,
+                    message: Some("Mission download complete".into()),
+                    revision: stored.revision,
+                });
+                let _ = download.respond_to.send(Ok(stored));
+            }
+        }
+    }
+
+    fn resolve_mission_failure(&self, task: MissionTask, error: CoreError) {
+        let message = error.to_string();
+        match task.state {
+            MissionTaskState::Upload(upload) => {
+                *self.mission_plan.write() = upload.previous_plan.clone();
+                events::emit_mission_plan(self.mission_plan());
+                events::emit_mission_sync(
+                    domain::MissionSyncStatus::new(domain::MissionSyncStage::Failed)
+                        .with_message(message.clone()),
+                );
+                events::emit_mission_operation(domain::MissionOperationReport {
+                    operation: domain::MissionOperationKind::Upload,
+                    status: domain::MissionOperationStatus::Failed,
+                    message: Some(message.clone()),
+                    revision: self.mission_revision(),
+                });
+                let _ = upload.respond_to.send(Err(error));
+            }
+            MissionTaskState::Download(download) => {
+                events::emit_mission_sync(
+                    domain::MissionSyncStatus::new(domain::MissionSyncStage::Failed)
+                        .with_message(message.clone()),
+                );
+                events::emit_mission_operation(domain::MissionOperationReport {
+                    operation: domain::MissionOperationKind::Download,
+                    status: domain::MissionOperationStatus::Failed,
+                    message: Some(message.clone()),
+                    revision: self.mission_revision(),
+                });
+                let _ = download.respond_to.send(Err(error));
+            }
+        }
+    }
 }
 
 enum SessionCommand {
@@ -215,6 +468,15 @@ enum SessionCommand {
     },
     FetchParameters {
         respond_to: oneshot::Sender<CoreResult<Vec<domain::ParameterValue>>>,
+        timeout: Duration,
+    },
+    UploadMission {
+        plan: domain::MissionPlan,
+        respond_to: oneshot::Sender<CoreResult<domain::MissionPlan>>,
+        timeout: Duration,
+    },
+    DownloadMission {
+        respond_to: oneshot::Sender<CoreResult<domain::MissionPlan>>,
         timeout: Duration,
     },
 }
@@ -235,6 +497,53 @@ impl MavlinkSession {
 
     fn parameter_cache(&self) -> Vec<domain::ParameterValue> {
         self.state.parameter_cache()
+    }
+
+    fn mission_plan(&self) -> domain::MissionPlan {
+        self.state.mission_plan()
+    }
+
+    fn mission_revision(&self) -> u32 {
+        self.state.mission_revision()
+    }
+
+    async fn download_mission(&self, timeout_budget: Duration) -> CoreResult<domain::MissionPlan> {
+        let (tx, rx) = oneshot::channel();
+        self.command_tx
+            .send(SessionCommand::DownloadMission {
+                respond_to: tx,
+                timeout: timeout_budget,
+            })
+            .await
+            .map_err(|_| invalid_argument("connection closed"))?;
+
+        let response = tokio::time::timeout(timeout_budget + Duration::from_secs(1), rx)
+            .await
+            .map_err(|_| timeout(timeout_budget))?;
+
+        response.map_err(|_| invalid_argument("connection closed"))?
+    }
+
+    async fn upload_mission(
+        &self,
+        plan: domain::MissionPlan,
+        timeout_budget: Duration,
+    ) -> CoreResult<domain::MissionPlan> {
+        let (tx, rx) = oneshot::channel();
+        self.command_tx
+            .send(SessionCommand::UploadMission {
+                plan,
+                respond_to: tx,
+                timeout: timeout_budget,
+            })
+            .await
+            .map_err(|_| invalid_argument("connection closed"))?;
+
+        let response = tokio::time::timeout(timeout_budget + Duration::from_secs(1), rx)
+            .await
+            .map_err(|_| timeout(timeout_budget))?;
+
+        response.map_err(|_| invalid_argument("connection closed"))?
     }
 }
 
@@ -273,6 +582,61 @@ impl MavlinkManager {
             .as_ref()
             .map(|session| session.parameter_cache())
             .unwrap_or_default()
+    }
+
+    pub fn mission_plan(&self) -> domain::MissionPlan {
+        self.session
+            .lock()
+            .as_ref()
+            .map(|session| session.mission_plan())
+            .unwrap_or_else(|| domain::MissionPlan::new("mission-idle"))
+    }
+
+    pub fn cached_mission_plan(&self) -> domain::MissionPlan {
+        self.mission_plan()
+    }
+
+    pub async fn download_mission(
+        &self,
+        timeout_override: Option<Duration>,
+    ) -> CoreResult<domain::MissionPlan> {
+        let timeout = timeout_override.unwrap_or(DEFAULT_MISSION_TIMEOUT);
+        let session = self
+            .session
+            .lock()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| invalid_argument("no active MAVLink session"))?;
+
+        session.download_mission(timeout).await
+    }
+
+    pub async fn upload_mission(
+        &self,
+        mut plan: domain::MissionPlan,
+        timeout_override: Option<Duration>,
+    ) -> CoreResult<domain::MissionPlan> {
+        let timeout = timeout_override.unwrap_or(DEFAULT_MISSION_TIMEOUT);
+        let session = self
+            .session
+            .lock()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| invalid_argument("no active MAVLink session"))?;
+
+        let current_revision = session.mission_revision();
+        if plan.revision != 0 && plan.revision != current_revision {
+            return Err(invalid_argument(format!(
+                "plan revision mismatch: expected {}, got {}",
+                current_revision, plan.revision
+            )));
+        }
+
+        if plan.plan_id.is_empty() {
+            plan.plan_id = format!("mission-upload-{}", current_millis());
+        }
+
+        session.upload_mission(plan, timeout).await
     }
 
     pub async fn connect(&self, config: LinkConfig) -> CoreResult<domain::ConnectionStatus> {
@@ -407,6 +771,39 @@ async fn spawn_simulated_session() -> CoreResult<MavlinkSession> {
                             events::emit(CoreEvent::ParameterProgress { received: params.len(), expected: Some(params.len()) });
                             events::emit(CoreEvent::ParameterBatch { parameters: params });
                         }
+                        SessionCommand::DownloadMission { respond_to, .. } => {
+                            let plan = state.mission_plan();
+                            events::emit_mission_sync(
+                                domain::MissionSyncStatus::new(domain::MissionSyncStage::Downloading)
+                                    .with_progress(Some(plan.items.len() as u16), Some(plan.items.len() as u16))
+                                    .with_message("simulated mission ready"),
+                            );
+                            events::emit_mission_plan(plan.clone());
+                            events::emit_mission_operation(domain::MissionOperationReport {
+                                operation: domain::MissionOperationKind::Download,
+                                status: domain::MissionOperationStatus::Success,
+                                message: Some("Simulated mission provided".into()),
+                                revision: plan.revision,
+                            });
+                            let _ = respond_to.send(Ok(plan));
+                        }
+                        SessionCommand::UploadMission { plan, respond_to, .. } => {
+                            let plan = normalize_mission_plan(plan);
+                            let plan = state.replace_mission_plan(plan);
+                            events::emit_mission_plan(plan.clone());
+                            events::emit_mission_sync(
+                                domain::MissionSyncStatus::new(domain::MissionSyncStage::Completed)
+                                    .with_progress(Some(plan.items.len() as u16), Some(plan.items.len() as u16))
+                                    .with_message("simulated mission updated"),
+                            );
+                            events::emit_mission_operation(domain::MissionOperationReport {
+                                operation: domain::MissionOperationKind::Upload,
+                                status: domain::MissionOperationStatus::Success,
+                                message: Some("Simulated mission accepted".into()),
+                                revision: plan.revision,
+                            });
+                            let _ = respond_to.send(Ok(plan));
+                        }
                     },
                     _ = heartbeat_interval.tick() => {
                         counter = counter.wrapping_add(1);
@@ -451,6 +848,8 @@ async fn spawn_simulated_session() -> CoreResult<MavlinkSession> {
                         }
                     }
                 }
+
+                state.mission_task_expire_if_needed();
             }
         }
     });
@@ -514,10 +913,91 @@ async fn spawn_udp_session(config: LinkConfig) -> CoreResult<MavlinkSession> {
                                 }
                             }
                         }
+                        SessionCommand::DownloadMission { respond_to, timeout } => {
+                            let (target_system, target_component) = state.autopilot_ids();
+                            match state.start_mission_download(timeout, respond_to, target_system, target_component) {
+                                Ok(()) => {
+                                    let request = MavMessage::MISSION_REQUEST_LIST(
+                                        common::MISSION_REQUEST_LIST_DATA {
+                                            target_system,
+                                            target_component,
+                                        },
+                                    );
+                                    if let Err(err) = connection.send_default(&request).await {
+                                        if let Some(task) = state.take_mission_task() {
+                                            state.resolve_mission_failure(
+                                                task,
+                                                CoreError::Other(anyhow::anyhow!(err.to_string())),
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(responder) => {
+                                    let _ = responder.send(Err(invalid_argument("mission operation already running")));
+                                }
+                            }
+                        }
+                        SessionCommand::UploadMission { plan, respond_to, timeout } => {
+                            let (target_system, target_component) = state.autopilot_ids();
+                            let total = plan.items.len() as u16;
+                            match state.start_mission_upload(plan, timeout, respond_to, target_system, target_component) {
+                                Ok(()) => {
+                                    let clear = MavMessage::MISSION_CLEAR_ALL(
+                                        common::MISSION_CLEAR_ALL_DATA {
+                                            target_system,
+                                            target_component,
+                                        },
+                                    );
+                                    if let Err(err) = connection.send_default(&clear).await {
+                                        if let Some(task) = state.take_mission_task() {
+                                            state.resolve_mission_failure(
+                                                task,
+                                                CoreError::Other(anyhow::anyhow!(err.to_string())),
+                                            );
+                                        }
+                                        continue;
+                                    }
+
+                                    let count = MavMessage::MISSION_COUNT(
+                                        common::MISSION_COUNT_DATA {
+                                            target_system,
+                                            target_component,
+                                            count: total,
+                                        },
+                                    );
+                                    if let Err(err) = connection.send_default(&count).await {
+                                        if let Some(task) = state.take_mission_task() {
+                                            state.resolve_mission_failure(
+                                                task,
+                                                CoreError::Other(anyhow::anyhow!(err.to_string())),
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(responder) => {
+                                    let _ = responder.send(Err(invalid_argument("mission operation already running")));
+                                }
+                            }
+                        }
                     },
                     result = connection.recv() => match result {
                         Ok((header, message)) => {
-                            handle_mavlink_message(&state, header, message);
+                            let outgoing = handle_mavlink_message(&state, header, message);
+                            for msg in outgoing {
+                                if let Err(err) = connection.send_default(&msg).await {
+                                    state.set_status(
+                                        domain::ConnectionPhase::Error,
+                                        Some(format!("mission send error: {err}")),
+                                    );
+                                    if let Some(task) = state.take_mission_task() {
+                                        state.resolve_mission_failure(
+                                            task,
+                                            CoreError::Other(anyhow::anyhow!(err.to_string())),
+                                        );
+                                    }
+                                    break;
+                                }
+                            }
                         }
                         Err(err) => {
                             state.set_status(domain::ConnectionPhase::Error, Some(format!("recv error: {err}")));
@@ -528,6 +1008,7 @@ async fn spawn_udp_session(config: LinkConfig) -> CoreResult<MavlinkSession> {
                 }
 
                 state.expire_parameter_request_if_needed();
+                state.mission_task_expire_if_needed();
             }
 
             state.set_status(
@@ -596,10 +1077,91 @@ async fn spawn_serial_session(config: LinkConfig) -> CoreResult<MavlinkSession> 
                                 }
                             }
                         }
+                        SessionCommand::DownloadMission { respond_to, timeout } => {
+                            let (target_system, target_component) = state.autopilot_ids();
+                            match state.start_mission_download(timeout, respond_to, target_system, target_component) {
+                                Ok(()) => {
+                                    let request = MavMessage::MISSION_REQUEST_LIST(
+                                        common::MISSION_REQUEST_LIST_DATA {
+                                            target_system,
+                                            target_component,
+                                        },
+                                    );
+                                    if let Err(err) = connection.send_default(&request).await {
+                                        if let Some(task) = state.take_mission_task() {
+                                            state.resolve_mission_failure(
+                                                task,
+                                                CoreError::Other(anyhow::anyhow!(err.to_string())),
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(responder) => {
+                                    let _ = responder.send(Err(invalid_argument("mission operation already running")));
+                                }
+                            }
+                        }
+                        SessionCommand::UploadMission { plan, respond_to, timeout } => {
+                            let (target_system, target_component) = state.autopilot_ids();
+                            let total = plan.items.len() as u16;
+                            match state.start_mission_upload(plan, timeout, respond_to, target_system, target_component) {
+                                Ok(()) => {
+                                    let clear = MavMessage::MISSION_CLEAR_ALL(
+                                        common::MISSION_CLEAR_ALL_DATA {
+                                            target_system,
+                                            target_component,
+                                        },
+                                    );
+                                    if let Err(err) = connection.send_default(&clear).await {
+                                        if let Some(task) = state.take_mission_task() {
+                                            state.resolve_mission_failure(
+                                                task,
+                                                CoreError::Other(anyhow::anyhow!(err.to_string())),
+                                            );
+                                        }
+                                        continue;
+                                    }
+
+                                    let count = MavMessage::MISSION_COUNT(
+                                        common::MISSION_COUNT_DATA {
+                                            target_system,
+                                            target_component,
+                                            count: total,
+                                        },
+                                    );
+                                    if let Err(err) = connection.send_default(&count).await {
+                                        if let Some(task) = state.take_mission_task() {
+                                            state.resolve_mission_failure(
+                                                task,
+                                                CoreError::Other(anyhow::anyhow!(err.to_string())),
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(responder) => {
+                                    let _ = responder.send(Err(invalid_argument("mission operation already running")));
+                                }
+                            }
+                        }
                     },
                     result = connection.recv() => match result {
                         Ok((header, message)) => {
-                            handle_mavlink_message(&state, header, message);
+                            let outgoing = handle_mavlink_message(&state, header, message);
+                            for msg in outgoing {
+                                if let Err(err) = connection.send_default(&msg).await {
+                                    state.set_status(
+                                        domain::ConnectionPhase::Error,
+                                        Some(format!("mission send error: {err}")),
+                                    );
+                                    if let Some(task) = state.take_mission_task() {
+                                        state.resolve_mission_failure(
+                                            task,
+                                            CoreError::Other(anyhow::anyhow!(err.to_string())),
+                                        );
+                                    }
+                                    break;
+                                }
+                            }
                         }
                         Err(err) => {
                             state.set_status(domain::ConnectionPhase::Error, Some(format!("serial recv error: {err}")));
@@ -610,6 +1172,7 @@ async fn spawn_serial_session(config: LinkConfig) -> CoreResult<MavlinkSession> 
                 }
 
                 state.expire_parameter_request_if_needed();
+                state.mission_task_expire_if_needed();
             }
 
             state.set_status(
@@ -626,7 +1189,31 @@ fn handle_mavlink_message(
     state: &Arc<SessionState>,
     header: mavlink::MavHeader,
     message: MavMessage,
-) {
+) -> Vec<MavMessage> {
+    enum DownloadAction {
+        Request {
+            seq: u16,
+            target_system: u8,
+            target_component: u8,
+            total: u16,
+        },
+        Complete,
+    }
+
+    enum UploadAction {
+        SendItem {
+            message: common::MISSION_ITEM_INT_DATA,
+            sent: u16,
+            total: u16,
+        },
+    }
+
+    let mut download_action: Option<DownloadAction> = None;
+    let mut upload_action: Option<UploadAction> = None;
+    let mut finalize_download = false;
+    let mut finalize_upload: Option<Result<(), CoreError>> = None;
+
+    let mut outgoing = Vec::new();
     match message {
         MavMessage::HEARTBEAT(data) => {
             state.set_autopilot_ids(header.system_id, header.component_id);
@@ -683,8 +1270,331 @@ fn handle_mavlink_message(
                 });
             }
         }
+        MavMessage::MISSION_COUNT(data) => {
+            let count = data.count as u16;
+            let action = state
+                .mission_task_mut(|task| {
+                    if let MissionTaskState::Download(download) = &mut task.state {
+                        download.expected = Some(count);
+                        download.total = count;
+                        download.next_request = 0;
+                        events::emit_mission_sync(
+                            domain::MissionSyncStatus::new(domain::MissionSyncStage::Downloading)
+                                .with_progress(Some(0), Some(count)),
+                        );
+                        Some(DownloadAction::Request {
+                            seq: 0,
+                            target_system: download.target_system,
+                            target_component: download.target_component,
+                            total: count,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+
+            match action {
+                Some(DownloadAction::Request {
+                    seq,
+                    target_system,
+                    target_component,
+                    total,
+                }) => {
+                    if total == 0 {
+                        finalize_download = true;
+                    } else {
+                        download_action = Some(DownloadAction::Request {
+                            seq,
+                            target_system,
+                            target_component,
+                            total,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        MavMessage::MISSION_ITEM_INT(data) => {
+            let item = mission_item_from_message(&data);
+            let action = state
+                .mission_task_mut(|task| {
+                    if let MissionTaskState::Download(download) = &mut task.state {
+                        download.items.push(item.clone());
+                        let received = download.items.len() as u16;
+                        let total = download.expected.unwrap_or(download.total);
+                        events::emit_mission_sync(
+                            domain::MissionSyncStatus::new(domain::MissionSyncStage::Downloading)
+                                .with_progress(Some(received.min(total)), Some(total)),
+                        );
+                        if total > 0 && received >= total {
+                            Some(DownloadAction::Complete)
+                        } else {
+                            let next = received;
+                            Some(DownloadAction::Request {
+                                seq: next,
+                                target_system: download.target_system,
+                                target_component: download.target_component,
+                                total,
+                            })
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+
+            match action {
+                Some(DownloadAction::Request {
+                    seq,
+                    target_system,
+                    target_component,
+                    total,
+                }) => {
+                    download_action = Some(DownloadAction::Request {
+                        seq,
+                        target_system,
+                        target_component,
+                        total,
+                    });
+                }
+                Some(DownloadAction::Complete) => {
+                    finalize_download = true;
+                }
+                None => {}
+            }
+        }
+        MavMessage::MISSION_REQUEST(data) => {
+            let seq = data.seq;
+            upload_action = state
+                .mission_task_mut(|task| {
+                    if let MissionTaskState::Upload(upload) = &mut task.state {
+                        if let Some(item) = upload.plan.items.get(seq as usize) {
+                            let message = mission_item_to_message(
+                                item,
+                                upload.target_system,
+                                upload.target_component,
+                            );
+                            upload.next_seq = seq + 1;
+                            Some(UploadAction::SendItem {
+                                message,
+                                sent: upload.next_seq,
+                                total: upload.total,
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+        }
+        MavMessage::MISSION_REQUEST_INT(data) => {
+            let seq = data.seq;
+            upload_action = state
+                .mission_task_mut(|task| {
+                    if let MissionTaskState::Upload(upload) = &mut task.state {
+                        if let Some(item) = upload.plan.items.get(seq as usize) {
+                            let message = mission_item_to_message(
+                                item,
+                                upload.target_system,
+                                upload.target_component,
+                            );
+                            upload.next_seq = seq + 1;
+                            Some(UploadAction::SendItem {
+                                message,
+                                sent: upload.next_seq,
+                                total: upload.total,
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+        }
+        MavMessage::MISSION_ACK(data) => {
+            let result = match data.mavtype {
+                MavMissionResult::MAV_MISSION_ACCEPTED => Ok(()),
+                other => Err(CoreError::Other(anyhow::anyhow!(format!(
+                    "mission rejected with code {:?}",
+                    other
+                )))),
+            };
+            finalize_upload = Some(result);
+        }
         _ => {}
     }
+
+    if let Some(DownloadAction::Request {
+        seq,
+        target_system,
+        target_component,
+        total,
+    }) = download_action
+    {
+        if total == 0 {
+            finalize_download = true;
+        } else {
+            outgoing.push(MavMessage::MISSION_REQUEST_INT(
+                common::MISSION_REQUEST_INT_DATA {
+                    target_system,
+                    target_component,
+                    seq,
+                },
+            ));
+        }
+    }
+
+    if let Some(UploadAction::SendItem {
+        message,
+        sent,
+        total,
+    }) = upload_action
+    {
+        outgoing.push(MavMessage::MISSION_ITEM_INT(message));
+        events::emit_mission_sync(
+            domain::MissionSyncStatus::new(domain::MissionSyncStage::Uploading)
+                .with_progress(Some(sent.min(total)), Some(total)),
+        );
+    }
+
+    if finalize_download {
+        if let Some(task) = state.take_mission_task() {
+            let plan = match &task.state {
+                MissionTaskState::Download(download) => download.as_plan(),
+                _ => domain::MissionPlan::new("mission-empty"),
+            };
+            state.resolve_mission_success(task, plan);
+        }
+    }
+
+    if let Some(result) = finalize_upload {
+        if let Some(task) = state.take_mission_task() {
+            match result {
+                Ok(()) => {
+                    let plan_override = match &task.state {
+                        MissionTaskState::Upload(upload) => Some(upload.plan.clone()),
+                        _ => None,
+                    };
+
+                    if let Some(plan) = plan_override {
+                        state.resolve_mission_success(task, plan);
+                    } else {
+                        state.resolve_mission_failure(
+                            task,
+                            CoreError::Other(anyhow::anyhow!(
+                                "mission ack received without upload context"
+                            )),
+                        );
+                    }
+                }
+                Err(error) => {
+                    state.resolve_mission_failure(task, error);
+                }
+            }
+        }
+    }
+
+    outgoing
+}
+
+fn current_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+fn mission_item_from_message(data: &common::MISSION_ITEM_INT_DATA) -> domain::MissionItem {
+    domain::MissionItem {
+        seq: data.seq,
+        command: (data.command as u32) as u16,
+        frame: mission_frame_from_mav(data.frame),
+        latitude_deg: (data.x as f64) / 1e7,
+        longitude_deg: (data.y as f64) / 1e7,
+        altitude_m: data.z,
+        param1: data.param1,
+        param2: data.param2,
+        param3: data.param3,
+        param4: data.param4,
+        auto_continue: data.autocontinue != 0,
+        is_current: data.current != 0,
+    }
+}
+
+fn mission_item_to_message(
+    item: &domain::MissionItem,
+    target_system: u8,
+    target_component: u8,
+) -> common::MISSION_ITEM_INT_DATA {
+    let command = MavCmd::from_u32(item.command as u32).unwrap_or(MavCmd::MAV_CMD_NAV_WAYPOINT);
+    common::MISSION_ITEM_INT_DATA {
+        param1: item.param1,
+        param2: item.param2,
+        param3: item.param3,
+        param4: item.param4,
+        x: (normalize_latitude(item.latitude_deg) * 1e7).round() as i32,
+        y: (normalize_longitude(item.longitude_deg) * 1e7).round() as i32,
+        z: item.altitude_m,
+        seq: item.seq,
+        frame: mission_frame_to_mav(item.frame.clone()),
+        current: if item.is_current { 1 } else { 0 },
+        autocontinue: if item.auto_continue { 1 } else { 0 },
+        command,
+        target_system,
+        target_component,
+    }
+}
+
+fn mission_frame_to_mav(frame: domain::MissionFrame) -> MavFrame {
+    match frame {
+        domain::MissionFrame::Global => MavFrame::MAV_FRAME_GLOBAL,
+        domain::MissionFrame::GlobalRelativeAlt => MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT,
+        domain::MissionFrame::GlobalTerrainAlt => MavFrame::MAV_FRAME_GLOBAL_TERRAIN_ALT,
+        domain::MissionFrame::Mission => MavFrame::MAV_FRAME_MISSION,
+    }
+}
+
+fn mission_frame_from_mav(value: MavFrame) -> domain::MissionFrame {
+    match value {
+        MavFrame::MAV_FRAME_GLOBAL => domain::MissionFrame::Global,
+        MavFrame::MAV_FRAME_GLOBAL_TERRAIN_ALT => domain::MissionFrame::GlobalTerrainAlt,
+        MavFrame::MAV_FRAME_MISSION => domain::MissionFrame::Mission,
+        _ => domain::MissionFrame::GlobalRelativeAlt,
+    }
+}
+
+fn normalize_mission_plan(mut plan: domain::MissionPlan) -> domain::MissionPlan {
+    for (idx, item) in plan.items.iter_mut().enumerate() {
+        item.seq = idx as u16;
+        item.latitude_deg = normalize_latitude(item.latitude_deg);
+        item.longitude_deg = normalize_longitude(item.longitude_deg);
+        item.is_current = idx == 0;
+        if !item.auto_continue {
+            item.auto_continue = true;
+        }
+    }
+    plan.last_modified_millis = current_millis();
+    plan
+}
+
+fn normalize_latitude(value: f64) -> f64 {
+    value.clamp(-90.0, 90.0)
+}
+
+fn normalize_longitude(value: f64) -> f64 {
+    let mut lon = value;
+    while lon > 180.0 {
+        lon -= 360.0;
+    }
+    while lon < -180.0 {
+        lon += 360.0;
+    }
+    lon
 }
 
 fn map_vehicle_type(value: MavType) -> domain::VehicleType {

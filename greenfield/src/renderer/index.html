@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <title>QGC Greenfield Prototype</title>
+    <link rel="stylesheet" href="./styles/maplibre.css" />
     <style>
       :root {
         color-scheme: dark light;
@@ -151,6 +152,71 @@
         max-height: 320px;
         overflow: auto;
       }
+      .mission-controls {
+        margin: 1rem 0;
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .mission-sync-badge {
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        background: #1f2937;
+        font-size: 0.85rem;
+      }
+      .mission-sync-badge[data-stage='uploading'] {
+        background: rgba(37, 99, 235, 0.4);
+      }
+      .mission-sync-badge[data-stage='downloading'] {
+        background: rgba(16, 185, 129, 0.35);
+      }
+      .mission-sync-badge[data-stage='failed'] {
+        background: rgba(239, 68, 68, 0.45);
+      }
+      .mission-status {
+        font-size: 0.9rem;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      .mission-layout {
+        margin-top: 1rem;
+        display: grid;
+        gap: 1.5rem;
+        grid-template-columns: minmax(320px, 2fr) minmax(220px, 1fr);
+        align-items: flex-start;
+      }
+      .mission-map {
+        min-height: 340px;
+        border-radius: 0.75rem;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .mission-table-wrapper {
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 0.75rem;
+        padding: 1rem;
+        max-height: 360px;
+        overflow: auto;
+      }
+      .mission-table-wrapper table {
+        margin-bottom: 0.75rem;
+      }
+      .mission-empty {
+        padding: 1rem;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.6);
+      }
+      tr[data-selected='true'] {
+        background: rgba(37, 99, 235, 0.25);
+      }
+      .mission-alt-input {
+        width: 5rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.5rem;
+        border: none;
+        background: rgba(255, 255, 255, 0.1);
+        color: inherit;
+      }
       .hidden {
         display: none !important;
       }
@@ -242,6 +308,35 @@
           </table>
           <div id="parameter-empty" class="hidden" style="padding: 1rem; text-align: center;">
             No parameters loaded yet.
+          </div>
+        </div>
+      </section>
+      <section>
+        <h2>Mission Planner</h2>
+        <div class="mission-controls">
+          <button id="mission-download">Download Mission</button>
+          <button id="mission-upload">Upload Mission</button>
+          <button id="mission-add-waypoint">Add Waypoint</button>
+          <button id="mission-generate-pattern">Generate Square Pattern</button>
+          <span id="mission-sync-status" class="mission-sync-badge">Idle</span>
+        </div>
+        <div id="mission-status" class="mission-status">Mission idle</div>
+        <div class="mission-layout">
+          <div id="mission-map" class="mission-map"></div>
+          <div class="mission-table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Latitude</th>
+                  <th>Longitude</th>
+                  <th>Altitude (m)</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="mission-table-body"></tbody>
+            </table>
+            <div id="mission-empty" class="mission-empty">No mission waypoints yet.</div>
           </div>
         </div>
       </section>

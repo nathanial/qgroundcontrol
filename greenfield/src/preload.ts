@@ -5,7 +5,8 @@ import type {
   DeviceDescriptor,
   ConnectionStatus,
   ParameterValue,
-  ConnectOptions
+  ConnectOptions,
+  MissionPlan
 } from '../rust-core/index';
 
 const RUST_CHANNEL = 'rust-message';
@@ -52,5 +53,17 @@ contextBridge.exposeInMainWorld('backend', {
   },
   getCachedParameters(): Promise<ParameterValue[]> {
     return ipcRenderer.invoke('rust:getCachedParameters');
+  },
+  getMissionPlan(): Promise<MissionPlan> {
+    return ipcRenderer.invoke('rust:getMissionPlan');
+  },
+  getCachedMissionPlan(): Promise<MissionPlan> {
+    return ipcRenderer.invoke('rust:getCachedMissionPlan');
+  },
+  downloadMission(timeoutMs?: number): Promise<MissionPlan> {
+    return ipcRenderer.invoke('rust:downloadMission', timeoutMs ?? undefined);
+  },
+  uploadMission(plan: MissionPlan, timeoutMs?: number): Promise<MissionPlan> {
+    return ipcRenderer.invoke('rust:uploadMission', plan, timeoutMs ?? undefined);
   }
 });

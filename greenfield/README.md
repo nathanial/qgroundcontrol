@@ -87,3 +87,10 @@ Key scripts:
 4. Add CI coverage for `npm run build`, `npm run test`, and smoke-connect scripts to keep the napi bridge healthy across platforms.
 
 With Phase 1 complete, the greenfield shell now proves end-to-end connectivity and logging without touching the legacy Qt UI, giving us a launch pad for the telemetry/Mission planning work queued in Phases 2 and beyond.
+
+## Phase 3 – Mission Planning & Upload (September 26, 2025)
+
+- Integrated a MapLibre-powered mission canvas that renders live waypoint overlays, updates in real time, and supports click-to-add editing with automatic bounding fits.
+- Added a mission inspector alongside the map with altitude editing, quick waypoint removal, and a square-pattern generator for rapid survey prototyping.
+- Exposed Rust-side mission upload/download workflows over the napi bridge, maintaining optimistic revision checks and surfacing sync progress/events to the renderer.
+- Extended test coverage with a simulated-link round-trip mission suite to ensure the MAVLink mission protocol stays healthy during future refactors.

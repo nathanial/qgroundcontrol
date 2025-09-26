@@ -48,6 +48,29 @@ type ParameterValue = {
   value: number;
 };
 
+type MissionItem = {
+  seq: number;
+  command: number;
+  frame: string;
+  latitudeDeg: number;
+  longitudeDeg: number;
+  altitudeM: number;
+  param1: number;
+  param2: number;
+  param3: number;
+  param4: number;
+  autoContinue: boolean;
+  isCurrent: boolean;
+};
+
+type MissionPlan = {
+  planId: string;
+  revision: number;
+  items: MissionItem[];
+  lastModifiedMillis: number;
+  notes?: string | null;
+};
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 
@@ -78,6 +101,10 @@ type RustModule = {
   disconnectMavlink(): Promise<void>;
   fetchParameters(timeoutMs?: number): Promise<ParameterValue[]>;
   currentConnectionStatus(): ConnectionStatus;
+  currentMissionPlan(): MissionPlan;
+  cachedMissionPlan(): MissionPlan;
+  downloadMission(timeoutMs?: number): Promise<MissionPlan>;
+  uploadMission(plan: MissionPlan, timeoutMs?: number): Promise<MissionPlan>;
 };
 
 const rust = require(resolveNativeModule()) as RustModule;
@@ -119,5 +146,74 @@ describe('rust-core napi surface', () => {
     await rust.disconnectMavlink();
     const idleStatus = rust.currentConnectionStatus();
     expect(idleStatus.phase).toBeDefined();
+  });
+
+  it('round-trips mission upload/download for simulated link', async () => {
+    const status = await rust.connectMavlink({ forceSimulated: true });
+    expect(status.phase).toBeDefined();
+
+    const baseline = rust.currentMissionPlan();
+    const altitude = baseline.items[0]?.altitudeM ?? 60;
+
+    const nextPlan: MissionPlan = {
+      planId: baseline.planId,
+      revision: baseline.revision,
+      lastModifiedMillis: Date.now(),
+      notes: baseline.notes ?? undefined,
+      items: [
+        {
+          seq: 0,
+          command: 16,
+          frame: 'GlobalRelativeAlt',
+          latitudeDeg: 37.3349,
+          longitudeDeg: -121.8946,
+          altitudeM: altitude,
+          param1: 0,
+          param2: 0,
+          param3: 0,
+          param4: 0,
+          autoContinue: true,
+          isCurrent: true
+        },
+        {
+          seq: 1,
+          command: 16,
+          frame: 'GlobalRelativeAlt',
+          latitudeDeg: 37.3354,
+          longitudeDeg: -121.8938,
+          altitudeM: altitude,
+          param1: 0,
+          param2: 0,
+          param3: 0,
+          param4: 0,
+          autoContinue: true,
+          isCurrent: false
+        },
+        {
+          seq: 2,
+          command: 16,
+          frame: 'GlobalRelativeAlt',
+          latitudeDeg: 37.3359,
+          longitudeDeg: -121.8949,
+          altitudeM: altitude,
+          param1: 0,
+          param2: 0,
+          param3: 0,
+          param4: 0,
+          autoContinue: true,
+          isCurrent: false
+        }
+      ]
+    };
+
+    const uploaded = await rust.uploadMission(nextPlan, 10_000);
+    expect(uploaded.items.length).toBe(nextPlan.items.length);
+    expect(uploaded.revision).toBeGreaterThanOrEqual(baseline.revision);
+
+    const downloaded = await rust.downloadMission(10_000);
+    expect(downloaded.items.length).toBe(nextPlan.items.length);
+    expect(downloaded.items[0].latitudeDeg).toBeCloseTo(nextPlan.items[0].latitudeDeg, 5);
+
+    await rust.disconnectMavlink();
   });
 });

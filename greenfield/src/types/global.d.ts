@@ -4,7 +4,8 @@ import type {
   DeviceDescriptor,
   ConnectionStatus,
   ParameterValue,
-  ConnectOptions
+  ConnectOptions,
+  MissionPlan
 } from 'rust-core';
 
 interface BackendAPI {
@@ -18,6 +19,10 @@ interface BackendAPI {
   fetchParameters(timeoutMs?: number): Promise<ParameterValue[]>;
   getConnectionStatus(): Promise<ConnectionStatus>;
   getCachedParameters(): Promise<ParameterValue[]>;
+  getMissionPlan(): Promise<MissionPlan>;
+  getCachedMissionPlan(): Promise<MissionPlan>;
+  downloadMission(timeoutMs?: number): Promise<MissionPlan>;
+  uploadMission(plan: MissionPlan, timeoutMs?: number): Promise<MissionPlan>;
 }
 
 declare global {

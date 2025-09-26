@@ -7,7 +7,8 @@ import type {
   DeviceDescriptor,
   ConnectionStatus,
   ParameterValue,
-  ConnectOptions
+  ConnectOptions,
+  MissionPlan
 } from '../rust-core/index';
 
 const RUST_CHANNEL = 'rust-message';
@@ -29,6 +30,10 @@ interface RustCoreModule {
   fetchParameters(timeoutMs?: number): Promise<ParameterValue[]>;
   currentConnectionStatus(): ConnectionStatus;
   cachedParameters(): ParameterValue[];
+  currentMissionPlan(): MissionPlan;
+  cachedMissionPlan(): MissionPlan;
+  downloadMission(timeoutMs?: number): Promise<MissionPlan>;
+  uploadMission(plan: MissionPlan, timeoutMs?: number): Promise<MissionPlan>;
 }
 
 function resolveRustModulePath(): string {
@@ -203,6 +208,42 @@ function setupIpcHandlers(): void {
   ipcMain.handle('rust:getCachedParameters', async () => {
     const core = ensureRustCore();
     return core.cachedParameters();
+  });
+
+  ipcMain.handle('rust:getMissionPlan', async () => {
+    const core = ensureRustCore();
+    return core.currentMissionPlan();
+  });
+
+  ipcMain.handle('rust:getCachedMissionPlan', async () => {
+    const core = ensureRustCore();
+    return core.cachedMissionPlan();
+  });
+
+  ipcMain.handle('rust:downloadMission', async (_event, timeoutMs?: number) => {
+    const core = ensureRustCore();
+    try {
+      const plan = await core.downloadMission(timeoutMs ?? undefined);
+      forwardRustJSONObject({ level: 'info', kind: 'mission', message: `Downloaded mission with ${plan.items.length} items` });
+      return plan;
+    } catch (error) {
+      const message = normalizeRustError(error, 'downloadMission failed');
+      forwardRustJSONObject(message);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('rust:uploadMission', async (_event, plan: MissionPlan, timeoutMs?: number) => {
+    const core = ensureRustCore();
+    try {
+      const result = await core.uploadMission(plan, timeoutMs ?? undefined);
+      forwardRustJSONObject({ level: 'info', kind: 'mission', message: `Uploaded mission revision ${result.revision}` });
+      return result;
+    } catch (error) {
+      const message = normalizeRustError(error, 'uploadMission failed');
+      forwardRustJSONObject(message);
+      throw error;
+    }
   });
 }
 
