@@ -8,7 +8,7 @@
     "build": "npm run build:native && npm run build:ts && npm run copy:renderer",
     "build:native": "npm exec -- napi build --platform --release --manifest-path rust-core/Cargo.toml --output-dir rust-core --dts index.d.ts",
     "build:ts": "tsc -b",
-    "copy:renderer": "cpx \"src/renderer/**/*.{html,css}\" dist/renderer",
+    "copy:renderer": "cpx \"src/renderer/**/*.{html,css,json}\" dist/renderer && cpx \"node_modules/maplibre-gl/dist/maplibre-gl*.js\" dist/renderer/vendor",
     "dev": "npm run build:native && npm run build:ts && npm run copy:renderer && electron .",
     "dev:native": "npm exec -- napi build --platform --watch --manifest-path rust-core/Cargo.toml --output-dir rust-core --dts index.d.ts",
     "lint": "tsc --noEmit",

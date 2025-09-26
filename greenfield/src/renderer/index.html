@@ -2,6 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'nonce-greenfield'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://demotiles.maplibre.org; connect-src 'self' https://demotiles.maplibre.org http://localhost:* ws://localhost:*; font-src 'self' data:; worker-src 'self' blob:"
+    />
+    <script type="importmap" nonce="greenfield">
+      {
+        "imports": {
+          "maplibre-gl": "./vendor/maplibre-gl.js"
+        }
+      }
+    </script>
     <title>QGC Greenfield Prototype</title>
     <link rel="stylesheet" href="./styles/maplibre.css" />
     <style>
