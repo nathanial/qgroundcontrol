@@ -16,6 +16,9 @@
     "test:rust": "cargo test --manifest-path rust-core/Cargo.toml",
     "test:ts": "npm run build:native && vitest run"
   },
+  "dependencies": {
+    "zustand": "^4.5.2"
+  },
   "devDependencies": {
     "@napi-rs/cli": "^3.2.0",
     "@types/node": "^20.12.7",

@@ -74,11 +74,106 @@ impl From<domain::ArmingState> for ArmingState {
 }
 
 #[napi(object)]
+#[derive(Debug, Serialize, Clone)]
+pub struct FlightModeStatus {
+    pub label: String,
+    pub base_mode: u8,
+    pub custom_mode: u32,
+}
+
+impl From<domain::FlightMode> for FlightModeStatus {
+    fn from(mode: domain::FlightMode) -> Self {
+        Self {
+            label: mode.label,
+            base_mode: mode.base_mode,
+            custom_mode: mode.custom_mode,
+        }
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Serialize, Clone)]
+pub struct BatteryStatus {
+    pub voltage_v: f64,
+    pub current_a: Option<f64>,
+    pub remaining_percent: Option<f64>,
+}
+
+impl From<domain::BatteryStatus> for BatteryStatus {
+    fn from(status: domain::BatteryStatus) -> Self {
+        Self {
+            voltage_v: status.voltage_v as f64,
+            current_a: status.current_a.map(|value| value as f64),
+            remaining_percent: status.remaining_percent.map(|value| value as f64),
+        }
+    }
+}
+
+#[napi(string_enum)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub enum GpsFixType {
+    NoFix,
+    DeadReckoning,
+    Fix2D,
+    Fix3D,
+    DGps,
+    RtkFloat,
+    RtkFixed,
+    StaticHold,
+    Other,
+}
+
+impl From<domain::GpsFixType> for GpsFixType {
+    fn from(value: domain::GpsFixType) -> Self {
+        match value {
+            domain::GpsFixType::NoFix => Self::NoFix,
+            domain::GpsFixType::DeadReckoning => Self::DeadReckoning,
+            domain::GpsFixType::Fix2D => Self::Fix2D,
+            domain::GpsFixType::Fix3D => Self::Fix3D,
+            domain::GpsFixType::DGps => Self::DGps,
+            domain::GpsFixType::RtkFloat => Self::RtkFloat,
+            domain::GpsFixType::RtkFixed => Self::RtkFixed,
+            domain::GpsFixType::StaticHold => Self::StaticHold,
+            domain::GpsFixType::Other => Self::Other,
+        }
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Serialize, Clone)]
+pub struct GpsStatus {
+    pub fix_type: GpsFixType,
+    pub satellites_visible: u8,
+    pub latitude_deg: Option<f64>,
+    pub longitude_deg: Option<f64>,
+    pub altitude_m: Option<f64>,
+    pub hdop: Option<f64>,
+    pub vdop: Option<f64>,
+}
+
+impl From<domain::GpsStatus> for GpsStatus {
+    fn from(status: domain::GpsStatus) -> Self {
+        Self {
+            fix_type: status.fix_type.into(),
+            satellites_visible: status.satellites_visible,
+            latitude_deg: status.latitude_deg,
+            longitude_deg: status.longitude_deg,
+            altitude_m: status.altitude_m,
+            hdop: status.hdop.map(|value| value as f64),
+            vdop: status.vdop.map(|value| value as f64),
+        }
+    }
+}
+
+#[napi(object)]
 pub struct VehicleStatus {
     pub vehicle_id: String,
     pub vehicle_type: VehicleType,
     pub arming_state: ArmingState,
     pub heartbeat_millis: u32,
+    pub flight_mode: Option<FlightModeStatus>,
+    pub battery: Option<BatteryStatus>,
+    pub gps: Option<GpsStatus>,
 }
 
 impl From<domain::VehicleStatus> for VehicleStatus {
@@ -88,6 +183,9 @@ impl From<domain::VehicleStatus> for VehicleStatus {
             vehicle_type: status.vehicle_type.into(),
             arming_state: status.arming_state.into(),
             heartbeat_millis: status.heartbeat_millis,
+            flight_mode: status.flight_mode.map(Into::into),
+            battery: status.battery.map(Into::into),
+            gps: status.gps.map(Into::into),
         }
     }
 }
@@ -285,14 +383,22 @@ pub async fn run_diagnostics(timeout_ms: Option<u32>) -> Result<StatusMessage> {
 
 #[napi]
 pub fn bootstrap_vehicle_status() -> Result<VehicleStatus> {
-    let domain_status = domain::VehicleStatus {
-        vehicle_id: domain::VehicleId("SIM-01".into()),
-        vehicle_type: domain::VehicleType::Multirotor,
-        arming_state: domain::ArmingState::Disarmed,
-        heartbeat_millis: 120,
-    };
+    let status = mav_manager().vehicle_status();
 
-    Ok(domain_status.into())
+    if status.vehicle_id.as_str() == "UNKNOWN" {
+        let mut bootstrap = domain::VehicleStatus::new(domain::VehicleId("SIM-01".into()));
+        bootstrap.vehicle_type = domain::VehicleType::Multirotor;
+        bootstrap.arming_state = domain::ArmingState::Disarmed;
+        bootstrap.heartbeat_millis = 0;
+        bootstrap.flight_mode = Some(domain::FlightMode {
+            label: "Standby".into(),
+            base_mode: 0,
+            custom_mode: 0,
+        });
+        return Ok(bootstrap.into());
+    }
+
+    Ok(status.into())
 }
 
 #[napi]

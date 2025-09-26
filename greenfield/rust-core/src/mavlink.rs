@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mavlink::common::{self, MavMessage, MavState, MavType};
+use mavlink::common::{self, MavMessage, MavModeFlag, MavState, MavType};
 use mavlink::connect_async;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
@@ -74,6 +74,7 @@ impl PendingParameters {
 struct SessionState {
     descriptor: domain::DeviceDescriptor,
     status: RwLock<domain::ConnectionStatus>,
+    vehicle_status: RwLock<domain::VehicleStatus>,
     autopilot_ids: Mutex<Option<(u8, u8)>>,
     last_heartbeat: Mutex<Option<Instant>>,
     parameter_cache: RwLock<Vec<domain::ParameterValue>>,
@@ -82,11 +83,15 @@ struct SessionState {
 
 impl SessionState {
     fn new(descriptor: domain::DeviceDescriptor) -> Arc<Self> {
+        let mut vehicle_status =
+            domain::VehicleStatus::new(domain::VehicleId(descriptor.id.clone()));
+        vehicle_status.vehicle_type = domain::VehicleType::Unknown;
         Arc::new(Self {
             status: RwLock::new(
                 domain::ConnectionStatus::new(domain::ConnectionPhase::Connecting)
                     .with_device(descriptor.clone()),
             ),
+            vehicle_status: RwLock::new(vehicle_status),
             descriptor,
             autopilot_ids: Mutex::new(None),
             last_heartbeat: Mutex::new(None),
@@ -97,6 +102,21 @@ impl SessionState {
 
     fn status(&self) -> domain::ConnectionStatus {
         self.status.read().clone()
+    }
+
+    fn vehicle_status(&self) -> domain::VehicleStatus {
+        self.vehicle_status.read().clone()
+    }
+
+    fn update_vehicle_status<F>(&self, mut update: F)
+    where
+        F: FnMut(&mut domain::VehicleStatus),
+    {
+        let mut guard = self.vehicle_status.write();
+        update(&mut guard);
+        let snapshot = guard.clone();
+        drop(guard);
+        events::emit(CoreEvent::Heartbeat { status: snapshot });
     }
 
     fn set_status(&self, phase: domain::ConnectionPhase, message: Option<String>) {
@@ -209,6 +229,10 @@ impl MavlinkSession {
         self.state.status()
     }
 
+    fn vehicle_status(&self) -> domain::VehicleStatus {
+        self.state.vehicle_status()
+    }
+
     fn parameter_cache(&self) -> Vec<domain::ParameterValue> {
         self.state.parameter_cache()
     }
@@ -233,6 +257,14 @@ impl MavlinkManager {
             .as_ref()
             .map(|session| session.status())
             .unwrap_or_else(|| domain::ConnectionStatus::new(domain::ConnectionPhase::Idle))
+    }
+
+    pub fn vehicle_status(&self) -> domain::VehicleStatus {
+        self.session
+            .lock()
+            .as_ref()
+            .map(|session| session.vehicle_status())
+            .unwrap_or_default()
     }
 
     pub fn cached_parameters(&self) -> Vec<domain::ParameterValue> {
@@ -378,13 +410,38 @@ async fn spawn_simulated_session() -> CoreResult<MavlinkSession> {
                     },
                     _ = heartbeat_interval.tick() => {
                         counter = counter.wrapping_add(1);
-                        let heartbeat = domain::VehicleStatus {
-                            vehicle_id: domain::VehicleId("SIM-01".into()),
-                            vehicle_type: domain::VehicleType::Multirotor,
-                            arming_state: domain::ArmingState::Disarmed,
-                            heartbeat_millis: state.record_heartbeat_interval().max(500),
-                        };
-                        events::emit(CoreEvent::Heartbeat { status: heartbeat });
+                        let heartbeat_ms = state.record_heartbeat_interval().max(500);
+                        let percentage = (100.0 - (counter as f32 * 0.2)).clamp(5.0, 100.0);
+                        let base_mode = (
+                            common::MavModeFlag::MAV_MODE_FLAG_GUIDED_ENABLED.bits()
+                                | common::MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED.bits()
+                        ) as u8;
+
+                        state.update_vehicle_status(|status| {
+                            status.vehicle_id = domain::VehicleId("SIM-01".into());
+                            status.vehicle_type = domain::VehicleType::Multirotor;
+                            status.arming_state = domain::ArmingState::Disarmed;
+                            status.heartbeat_millis = heartbeat_ms;
+                            status.flight_mode = Some(domain::FlightMode {
+                                label: "Simulated Hold".into(),
+                                base_mode,
+                                custom_mode: 0,
+                            });
+                            status.battery = Some(domain::BatteryStatus {
+                                voltage_v: 11.4,
+                                current_a: Some(2.1),
+                                remaining_percent: Some(percentage),
+                            });
+                            status.gps = Some(domain::GpsStatus {
+                                fix_type: domain::GpsFixType::Fix3D,
+                                satellites_visible: 12,
+                                latitude_deg: Some(37.334_5 + (counter as f64 * 0.000_001)),
+                                longitude_deg: Some(-121.894_9 - (counter as f64 * 0.000_001)),
+                                altitude_m: Some(15.0),
+                                hdop: Some(0.9),
+                                vdop: Some(1.1),
+                            });
+                        });
 
                         if counter % 5 == 0 {
                             events::emit(CoreEvent::Diagnostics {
@@ -578,18 +635,34 @@ fn handle_mavlink_message(
                 Some("heartbeat received".into()),
             );
 
-            let heartbeat = domain::VehicleStatus {
-                vehicle_id: domain::VehicleId(format!("SYS-{}", header.system_id)),
-                vehicle_type: map_vehicle_type(data.mavtype),
-                arming_state: map_arming_state(data.system_status),
-                heartbeat_millis: state.record_heartbeat_interval(),
-            };
-            events::emit(CoreEvent::Heartbeat { status: heartbeat });
+            let heartbeat_interval = state.record_heartbeat_interval();
+            let heartbeat_ms = heartbeat_interval.max(100);
+
+            state.update_vehicle_status(|status| {
+                status.vehicle_id = domain::VehicleId(format!("SYS-{}", header.system_id));
+                status.vehicle_type = map_vehicle_type(data.mavtype);
+                status.arming_state = map_arming_state(data.system_status);
+                status.heartbeat_millis = heartbeat_ms;
+                status.flight_mode = Some(describe_flight_mode(data.base_mode, data.custom_mode));
+            });
         }
         MavMessage::STATUSTEXT(data) => {
             let severity = map_statustext_severity(data.severity);
             let message = trim_zero_terminated(&data.text);
             events::emit_log(severity, "mavlink", message);
+        }
+        MavMessage::SYS_STATUS(data) => {
+            let battery = battery_from_sys_status(&data);
+            state.update_vehicle_status(|status| {
+                status.battery = Some(battery.clone());
+            });
+        }
+        MavMessage::GPS_RAW_INT(data) => {
+            if let Some(gps) = gps_from_raw_int(&data) {
+                state.update_vehicle_status(|status| {
+                    status.gps = Some(gps.clone());
+                });
+            }
         }
         MavMessage::PARAM_VALUE(data) => {
             let value = domain::ParameterValue {
@@ -642,6 +715,123 @@ fn map_arming_state(value: MavState) -> domain::ArmingState {
         | MavState::MAV_STATE_CRITICAL
         | MavState::MAV_STATE_EMERGENCY => domain::ArmingState::Armed,
         _ => domain::ArmingState::Unknown,
+    }
+}
+
+fn describe_flight_mode(base_mode: MavModeFlag, custom_mode: u32) -> domain::FlightMode {
+    let base_bits = base_mode.bits();
+    let mut labels: Vec<&str> = Vec::new();
+
+    if base_bits & MavModeFlag::MAV_MODE_FLAG_AUTO_ENABLED.bits() != 0 {
+        labels.push("Auto");
+    }
+    if base_bits & MavModeFlag::MAV_MODE_FLAG_GUIDED_ENABLED.bits() != 0 {
+        labels.push("Guided");
+    }
+    if base_bits & MavModeFlag::MAV_MODE_FLAG_STABILIZE_ENABLED.bits() != 0 {
+        labels.push("Stabilized");
+    }
+    if base_bits & MavModeFlag::MAV_MODE_FLAG_MANUAL_INPUT_ENABLED.bits() != 0 {
+        labels.push("Manual");
+    }
+    if base_bits & MavModeFlag::MAV_MODE_FLAG_HIL_ENABLED.bits() != 0 {
+        labels.push("HIL");
+    }
+    if labels.is_empty() {
+        labels.push("Unknown");
+    }
+
+    if base_bits & MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED.bits() != 0 && custom_mode != 0 {
+        labels.push("Custom");
+    }
+
+    let mut label = labels.join(" · ");
+    if base_bits & MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED.bits() != 0 {
+        label = format!("{} ({:#X})", label, custom_mode);
+    }
+
+    domain::FlightMode {
+        label,
+        base_mode: (base_bits & 0xFF) as u8,
+        custom_mode,
+    }
+}
+
+fn battery_from_sys_status(data: &common::SYS_STATUS_DATA) -> domain::BatteryStatus {
+    let voltage_v = (data.voltage_battery as f32) / 1000.0;
+    let current_a = if data.current_battery < 0 {
+        None
+    } else {
+        Some(data.current_battery as f32 / 100.0)
+    };
+    let remaining_percent = if data.battery_remaining < 0 {
+        None
+    } else {
+        Some(data.battery_remaining as f32)
+    };
+
+    domain::BatteryStatus {
+        voltage_v,
+        current_a,
+        remaining_percent,
+    }
+}
+
+fn gps_from_raw_int(data: &common::GPS_RAW_INT_DATA) -> Option<domain::GpsStatus> {
+    let latitude_deg = if data.lat == 0 {
+        None
+    } else {
+        Some(data.lat as f64 / 1e7)
+    };
+    let longitude_deg = if data.lon == 0 {
+        None
+    } else {
+        Some(data.lon as f64 / 1e7)
+    };
+    let altitude_m = if data.alt == 0 {
+        None
+    } else {
+        Some(data.alt as f64 / 1000.0)
+    };
+
+    let hdop = if data.eph == u16::MAX {
+        None
+    } else {
+        Some(data.eph as f32 / 100.0)
+    };
+    let vdop = if data.epv == u16::MAX {
+        None
+    } else {
+        Some(data.epv as f32 / 100.0)
+    };
+
+    let status = domain::GpsStatus {
+        fix_type: map_gps_fix_type(data.fix_type as u8),
+        satellites_visible: data.satellites_visible,
+        latitude_deg,
+        longitude_deg,
+        altitude_m,
+        hdop,
+        vdop,
+    };
+
+    Some(status)
+}
+
+fn map_gps_fix_type<T>(value: T) -> domain::GpsFixType
+where
+    T: Into<u8>,
+{
+    match value.into() {
+        0 | 1 => domain::GpsFixType::NoFix,
+        2 => domain::GpsFixType::Fix2D,
+        3 => domain::GpsFixType::Fix3D,
+        4 => domain::GpsFixType::DGps,
+        5 => domain::GpsFixType::RtkFloat,
+        6 => domain::GpsFixType::RtkFixed,
+        7 => domain::GpsFixType::StaticHold,
+        8 => domain::GpsFixType::DeadReckoning,
+        _ => domain::GpsFixType::Other,
     }
 }
 

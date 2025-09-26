@@ -87,6 +87,32 @@
         display: grid;
         gap: 0.4rem;
       }
+      #health-dashboard {
+        margin-top: 1rem;
+        display: grid;
+        gap: 1rem;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      }
+      .health-card {
+        padding: 1rem;
+        border-radius: 0.75rem;
+        background: rgba(255, 255, 255, 0.06);
+        display: grid;
+        gap: 0.4rem;
+      }
+      .health-card h3 {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+      .health-card .value {
+        font-size: 1.5rem;
+        font-weight: 700;
+      }
+      .health-card .meta {
+        font-size: 0.85rem;
+        color: rgba(255, 255, 255, 0.7);
+      }
       table {
         width: 100%;
         border-collapse: collapse;
@@ -102,6 +128,31 @@
       .device-actions {
         display: flex;
         gap: 0.5rem;
+      }
+      .parameter-controls {
+        margin: 1rem 0;
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+      }
+      .parameter-controls input[type="search"] {
+        flex: 1;
+        min-width: 220px;
+        padding: 0.5rem 0.75rem;
+        border-radius: 0.5rem;
+        border: none;
+        background: rgba(255, 255, 255, 0.08);
+        color: inherit;
+      }
+      .parameter-table-wrapper {
+        margin-top: 1rem;
+        border-radius: 0.75rem;
+        background: rgba(255, 255, 255, 0.04);
+        max-height: 320px;
+        overflow: auto;
+      }
+      .hidden {
+        display: none !important;
       }
     </style>
   </head>
@@ -143,10 +194,56 @@
       <section>
         <h2>Vehicle Snapshot</h2>
         <div id="vehicle-status">Waiting for heartbeat…</div>
+        <div id="health-dashboard">
+          <div class="health-card">
+            <h3>Flight Mode</h3>
+            <div class="value" id="health-flight-mode">—</div>
+            <div class="meta" id="health-flight-meta">Waiting for data</div>
+          </div>
+          <div class="health-card">
+            <h3>Heartbeat</h3>
+            <div class="value" id="health-heartbeat">—</div>
+            <div class="meta" id="health-heartbeat-meta">No heartbeat yet</div>
+          </div>
+          <div class="health-card">
+            <h3>GPS</h3>
+            <div class="value" id="health-gps">—</div>
+            <div class="meta" id="health-gps-meta">No fix</div>
+          </div>
+          <div class="health-card">
+            <h3>Battery</h3>
+            <div class="value" id="health-battery">—</div>
+            <div class="meta" id="health-battery-meta">No telemetry</div>
+          </div>
+        </div>
       </section>
       <section>
         <h2>Parameters</h2>
         <div id="parameter-stats">No parameter data yet</div>
+        <div class="parameter-controls">
+          <input
+            type="search"
+            id="parameter-filter"
+            placeholder="Filter parameters by name"
+            autocomplete="off"
+          />
+        </div>
+        <div class="parameter-table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Index</th>
+                <th>Name</th>
+                <th>Value</th>
+                <th>Type</th>
+              </tr>
+            </thead>
+            <tbody id="parameter-table-body"></tbody>
+          </table>
+          <div id="parameter-empty" class="hidden" style="padding: 1rem; text-align: center;">
+            No parameters loaded yet.
+          </div>
+        </div>
       </section>
       <section>
         <h2>Event Log</h2>

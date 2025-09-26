@@ -28,12 +28,15 @@ pub enum ArmingState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VehicleStatus {
     pub vehicle_id: VehicleId,
     pub vehicle_type: VehicleType,
     pub arming_state: ArmingState,
     pub heartbeat_millis: u32,
+    pub flight_mode: Option<FlightMode>,
+    pub battery: Option<BatteryStatus>,
+    pub gps: Option<GpsStatus>,
 }
 
 impl VehicleStatus {
@@ -43,8 +46,55 @@ impl VehicleStatus {
             vehicle_type: VehicleType::Unknown,
             arming_state: ArmingState::Unknown,
             heartbeat_millis: 0,
+            flight_mode: None,
+            battery: None,
+            gps: None,
         }
     }
+}
+
+impl Default for VehicleStatus {
+    fn default() -> Self {
+        Self::new(VehicleId("UNKNOWN".into()))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FlightMode {
+    pub label: String,
+    pub base_mode: u8,
+    pub custom_mode: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BatteryStatus {
+    pub voltage_v: f32,
+    pub current_a: Option<f32>,
+    pub remaining_percent: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GpsFixType {
+    NoFix,
+    DeadReckoning,
+    Fix2D,
+    Fix3D,
+    DGps,
+    RtkFloat,
+    RtkFixed,
+    StaticHold,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GpsStatus {
+    pub fix_type: GpsFixType,
+    pub satellites_visible: u8,
+    pub latitude_deg: Option<f64>,
+    pub longitude_deg: Option<f64>,
+    pub altitude_m: Option<f64>,
+    pub hdop: Option<f32>,
+    pub vdop: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]

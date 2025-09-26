@@ -30,6 +30,8 @@
 - Render health dashboard: vehicle heartbeat, GPS, battery, flight mode.
 - Implement parameter browser with read-only capability; validate against live autopilot using simulated data (SITL).
 
+**Status update (September 26, 2025):** ✅ Completed. Renderer now uses a Zustand store fed by core events, with a telemetry dashboard (flight mode, heartbeat latency, GPS fix, battery stats) and a searchable parameter browser backed by cached values from the Rust core and simulator streams.
+
 ### Phase 3 – Mission Planning & Upload (Week 8-14)
 - Port mission data structures (Rust) reusing QGC FactSystem metadata.
 - Provide mission editor UI with map canvas (Leaflet/Mapbox GL) and pattern templates.

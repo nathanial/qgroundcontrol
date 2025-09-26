@@ -7,6 +7,12 @@ export declare const enum ArmingState {
   Unknown = 'Unknown'
 }
 
+export interface BatteryStatus {
+  voltageV: number
+  currentA?: number
+  remainingPercent?: number
+}
+
 export declare export declare function bootstrapVehicleStatus(): VehicleStatus
 
 export declare export declare function cachedParameters(): Array<ParameterValue>
@@ -63,6 +69,34 @@ export declare export declare function disconnectMavlink(): Promise<void>
 
 export declare export declare function fetchParameters(timeoutMs?: number | undefined | null): Promise<Array<ParameterValue>>
 
+export interface FlightModeStatus {
+  label: string
+  baseMode: number
+  customMode: number
+}
+
+export declare const enum GpsFixType {
+  NoFix = 'NoFix',
+  DeadReckoning = 'DeadReckoning',
+  Fix2D = 'Fix2D',
+  Fix3D = 'Fix3D',
+  DGps = 'DGps',
+  RtkFloat = 'RtkFloat',
+  RtkFixed = 'RtkFixed',
+  StaticHold = 'StaticHold',
+  Other = 'Other'
+}
+
+export interface GpsStatus {
+  fixType: GpsFixType
+  satellitesVisible: number
+  latitudeDeg?: number
+  longitudeDeg?: number
+  altitudeM?: number
+  hdop?: number
+  vdop?: number
+}
+
 export declare export declare function healthCheck(): StatusMessage
 
 export declare const enum LinkKind {
@@ -99,6 +133,9 @@ export interface VehicleStatus {
   vehicleType: VehicleType
   armingState: ArmingState
   heartbeatMillis: number
+  flightMode?: FlightModeStatus
+  battery?: BatteryStatus
+  gps?: GpsStatus
 }
 
 export declare const enum VehicleType {

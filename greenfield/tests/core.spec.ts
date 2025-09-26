@@ -13,6 +13,22 @@ type VehicleStatus = {
   vehicleType: string;
   armingState: string;
   heartbeatMillis: number;
+  flightMode?: {
+    label: string;
+    baseMode: number;
+    customMode: number;
+  } | null;
+  battery?: {
+    voltageV: number;
+    currentA?: number | null;
+    remainingPercent?: number | null;
+  } | null;
+  gps?: {
+    fixType: string;
+    satellitesVisible: number;
+    latitudeDeg?: number | null;
+    longitudeDeg?: number | null;
+  } | null;
 };
 
 type DeviceDescriptor = {
@@ -87,6 +103,7 @@ describe('rust-core napi surface', () => {
     const vehicle = rust.bootstrapVehicleStatus();
     expect(vehicle.vehicleId).toBeDefined();
     expect(vehicle.vehicleType).not.toHaveLength(0);
+    expect(vehicle.flightMode?.label).toBeDefined();
   });
 
   it('supports simulated link connectivity', async () => {
