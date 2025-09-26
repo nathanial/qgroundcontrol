@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>QGC Greenfield Prototype</title>
+    <style>
+      :root {
+        color-scheme: dark light;
+        font-family: "Segoe UI", Roboto, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: #111827;
+        color: #f9fafb;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      h1 {
+        margin-top: 0;
+        font-size: 2rem;
+      }
+      #status-badge {
+        display: inline-block;
+        margin-left: 0.5rem;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        background: #1f2937;
+        font-size: 0.875rem;
+      }
+      #rust-log {
+        margin-top: 1.5rem;
+        padding: 1rem;
+        border-radius: 0.75rem;
+        background: rgba(255, 255, 255, 0.04);
+        min-height: 160px;
+        display: flex;
+        flex-direction: column-reverse;
+        gap: 0.5rem;
+      }
+      .log-entry {
+        padding: 0.5rem 0.75rem;
+        border-radius: 0.5rem;
+        background: rgba(255, 255, 255, 0.08);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 0.875rem;
+        word-break: break-word;
+      }
+      .log-entry[data-level="error"] {
+        background: rgba(239, 68, 68, 0.2);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>QGroundControl Greenfield Shell</h1>
+      <p>
+        Rust core status:
+        <span id="status-badge">Waiting…</span>
+      </p>
+      <section id="rust-log"></section>
+    </main>
+    <script type="module" src="./index.js"></script>
+  </body>
+</html>

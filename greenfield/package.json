@@ -1,0 +1,23 @@
+{
+  "name": "qgc-greenfield",
+  "version": "0.1.0",
+  "description": "Electron + Rust scaffold for the QGroundControl rewrite",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "npm run build:native && npm run build:ts && npm run copy:renderer",
+    "build:native": "cd rust-core && napi build --platform --release",
+    "build:ts": "tsc -b",
+    "copy:renderer": "cpx \"src/renderer/**/*.html\" dist/renderer",
+    "dev": "npm run build:native && npm run build:ts && npm run copy:renderer && electron .",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4",
+    "@types/electron": "^25.2.1",
+    "@types/node": "^20.12.7",
+    "cpx": "^1.5.0",
+    "electron": "^30.0.0",
+    "typescript": "^5.4.3"
+  }
+}

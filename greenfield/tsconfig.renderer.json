@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src/renderer",
+    "outDir": "dist/renderer",
+    "module": "esnext",
+    "target": "ES2017",
+    "lib": ["DOM", "ES2017"],
+    "composite": true
+  },
+  "include": [
+    "src/renderer/**/*.ts"
+  ]
+}
