@@ -2,4 +2,6 @@ dist/
 node_modules/
 rust-core/target/
 rust-core/index.node
+rust-core/index.*.node
 .DS_Store
+*.tsbuildinfo

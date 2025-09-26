@@ -6,18 +6,17 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "npm run build:native && npm run build:ts && npm run copy:renderer",
-    "build:native": "cd rust-core && napi build --platform --release",
+    "build:native": "npm exec -- napi build --platform --release --manifest-path rust-core/Cargo.toml --output-dir rust-core",
     "build:ts": "tsc -b",
     "copy:renderer": "cpx \"src/renderer/**/*.html\" dist/renderer",
     "dev": "npm run build:native && npm run build:ts && npm run copy:renderer && electron .",
     "lint": "tsc --noEmit"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^2.18.4",
-    "@types/electron": "^25.2.1",
+    "@napi-rs/cli": "^3.2.0",
     "@types/node": "^20.12.7",
     "cpx": "^1.5.0",
-    "electron": "^30.0.0",
+    "electron": "^38.1.2",
     "typescript": "^5.4.3"
   }
 }

@@ -1,4 +1,5 @@
 use napi::bindgen_prelude::*;
+use napi_derive::napi;
 use serde::Serialize;
 
 /// Message returned to the Electron shell.

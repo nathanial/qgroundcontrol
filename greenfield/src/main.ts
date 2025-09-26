@@ -1,4 +1,5 @@
 import { app, BrowserWindow } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const RUST_CHANNEL = 'rust-message';
@@ -6,11 +7,36 @@ const pendingRustMessages: string[] = [];
 let mainWindow: BrowserWindow | null = null;
 
 interface RustCoreModule {
-  health_check(): { kind: string; message: string };
+  healthCheck(): { kind: string; message: string };
   version(): string;
 }
 
-const rustModulePath = path.join(__dirname, '..', 'rust-core', 'index.node');
+function resolveRustModulePath(): string {
+  const rustCoreDir = path.join(__dirname, '..', 'rust-core');
+  const defaultPath = path.join(rustCoreDir, 'index.node');
+
+  if (fs.existsSync(defaultPath)) {
+    return defaultPath;
+  }
+
+  try {
+    const entries = fs.readdirSync(rustCoreDir);
+    const candidate = entries.find((entry) => entry.startsWith('index.') && entry.endsWith('.node'));
+
+    if (candidate) {
+      return path.join(rustCoreDir, candidate);
+    }
+  } catch (error) {
+    forwardRustJSONObject({
+      level: 'warn',
+      message: `Unable to inspect rust-core directory for napi module: ${(error as Error).message}`
+    });
+  }
+
+  return defaultPath;
+}
+
+const rustModulePath = resolveRustModulePath();
 let rustCore: RustCoreModule | null = null;
 
 try {
@@ -51,8 +77,9 @@ function createWindow(): void {
 }
 
 function forwardRustMessage(message: string): void {
-  if (mainWindow && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send(RUST_CHANNEL, message);
+  const webContents = mainWindow?.webContents;
+  if (webContents && !webContents.isDestroyed() && !webContents.isLoadingMainFrame()) {
+    webContents.send(RUST_CHANNEL, message);
   } else {
     pendingRustMessages.push(message);
   }
@@ -69,7 +96,7 @@ function emitRustStatus(): void {
   }
 
   try {
-    const status = rustCore.health_check();
+    const status = rustCore.healthCheck();
     forwardRustJSONObject({ level: 'info', ...status });
   } catch (error) {
     forwardRustJSONObject({ level: 'error', message: `health_check failed: ${(error as Error).message}` });
