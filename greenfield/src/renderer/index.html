@@ -51,6 +51,31 @@
       .log-entry[data-level="error"] {
         background: rgba(239, 68, 68, 0.2);
       }
+      .controls {
+        margin-top: 1rem;
+        display: flex;
+        gap: 0.75rem;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        border: none;
+        border-radius: 0.5rem;
+        background: #2563eb;
+        color: #f9fafb;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+      #vehicle-status {
+        margin-top: 1rem;
+        padding: 1rem;
+        border-radius: 0.75rem;
+        background: rgba(255, 255, 255, 0.06);
+        display: grid;
+        gap: 0.4rem;
+      }
     </style>
   </head>
   <body>
@@ -60,6 +85,14 @@
         Rust core status:
         <span id="status-badge">Waiting…</span>
       </p>
+      <div class="controls">
+        <button id="run-diagnostics">Run Diagnostics</button>
+        <button id="simulate-failure">Simulate Failure</button>
+      </div>
+      <section>
+        <h2>Vehicle Snapshot</h2>
+        <div id="vehicle-status">Loading…</div>
+      </section>
       <section id="rust-log"></section>
     </main>
     <script type="module" src="./index.js"></script>

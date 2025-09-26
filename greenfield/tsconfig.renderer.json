@@ -9,6 +9,7 @@
     "composite": true
   },
   "include": [
-    "src/renderer/**/*.ts"
+    "src/renderer/**/*.ts",
+    "rust-core/index.d.ts"
   ]
 }

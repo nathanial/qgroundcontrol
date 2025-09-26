@@ -12,6 +12,7 @@
   "include": [
     "src/main.ts",
     "src/preload.ts",
-    "src/types/**/*.d.ts"
+    "src/types/**/*.d.ts",
+    "rust-core/index.d.ts"
   ]
 }

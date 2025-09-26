@@ -16,19 +16,22 @@ greenfield/
 │   └── renderer/         # Browser-side TypeScript + static assets
 └── rust-core/
     ├── Cargo.toml        # Rust crate compiled to index.node via napi-rs
+    ├── domain-model/     # Shared Rust data structures re-exported over napi
     ├── build.rs          # Hooks napi-build into cargo
     └── src/
-        └── lib.rs        # Exports health_check/version bindings today
+        ├── error.rs      # Structured error mapping to napi::Error
+        └── lib.rs        # Async diagnostics + status exports consumed by TS
 ```
 
 ### Electron shell
 - Compiles TypeScript into `dist/`.
-- Loads the Rust native module (`rust-core/index.node`) on startup and broadcasts its status messages to the renderer via IPC.
-- Renderer shows the latest Rust messages, proving the bridge end to end.
+- Loads the Rust native module (`rust-core/index.node`) on startup, wires IPC handlers for async diagnostics, and replays bootstrap data to the renderer.
+- Renderer exposes buttons that exercise the napi surface and renders the vehicle snapshot supplied by the Rust core.
 
 ### Rust core
-- Built as a `cdylib` using napi-rs. Functions annotated with `#[napi]` are callable from Node/Electron.
-- Currently exposes `health_check()` and `version()`—both return structured payloads used by the renderer.
+- Built as a `cdylib` using napi-rs. Functions annotated with `#[napi]` are callable from Node/Electron as synchronous or async commands.
+- Exposes `health_check()`, `run_diagnostics()`, `bootstrap_vehicle_status()`, `simulate_failure()`, and `version()` with structured error propagation.
+- `domain-model/` crate centralises MAVLink-agnostic data types (vehicle IDs, arming state, etc.) so both the napi layer and future Rust services share one definition set.
 - Future crates will house MAVLink transport, mission planners, parameter stores, etc. Exported APIs should stay small and typed to keep the boundary stable.
 
 ## Prerequisites
@@ -39,18 +42,22 @@ greenfield/
 
 ```bash
 cd greenfield
-npm install             # Installs Electron, TypeScript, @napi-rs/cli
-npm run build           # Builds the napi module and TypeScript bundles
-npm run dev             # Rebuilds and launches Electron
+npm install             # Installs Electron, TypeScript, @napi-rs/cli, Vitest
+npm run build           # Builds the napi module + TypeScript bundles (generates rust-core/index.d.ts)
+npm run dev             # Rebuilds once then launches Electron for manual testing
 ```
 
-During development you can rebuild the native module alone:
+For iterative Rust edits, keep a watcher running alongside Electron:
 
 ```bash
-npm run build:native    # cd rust-core && napi build --platform --release
+npm run dev:native      # Watches rust-core with napi --watch (install `cargo-watch` first)
 ```
 
-The resulting `rust-core/index.node` is ignored by git but consumed by Electron at runtime.
+Key scripts:
+
+- `npm run build:native` – One-off release build of the napi module + `.d.ts` bindings.
+- `npm run test` – Executes `cargo test` and the Vitest suite against the compiled napi module.
+- `npm run lint` – Type-checks the TypeScript workspace without emitting JS.
 
 ## Next steps
 

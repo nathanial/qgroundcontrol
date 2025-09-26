@@ -3,5 +3,7 @@ node_modules/
 rust-core/target/
 rust-core/index.node
 rust-core/index.*.node
+rust-core/index.js
 .DS_Store
 *.tsbuildinfo
+coverage/
