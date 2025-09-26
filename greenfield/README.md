@@ -19,21 +19,41 @@ greenfield/
     ├── domain-model/     # Shared Rust data structures re-exported over napi
     ├── build.rs          # Hooks napi-build into cargo
     └── src/
+        ├── discovery.rs  # Serial/UDP device polling with event emission
+        ├── events.rs     # ThreadsafeFunction event bus bridging Rust → JS
+        ├── mavlink.rs    # Async MAVLink transport + parameter handling
         ├── error.rs      # Structured error mapping to napi::Error
-        └── lib.rs        # Async diagnostics + status exports consumed by TS
+        └── lib.rs        # Public napi surface + conversions to domain types
 ```
 
 ### Electron shell
 - Compiles TypeScript into `dist/`.
-- Loads the Rust native module (`rust-core/index.node`) on startup, wires IPC handlers for async diagnostics, and replays bootstrap data to the renderer.
-- Renderer exposes buttons that exercise the napi surface and renders the vehicle snapshot supplied by the Rust core.
+- Loads the Rust native module (`rust-core/index.node`) on startup, wires IPC handlers for diagnostics, discovery, connectivity, and parameter requests, and replays bootstrap data to the renderer.
+- Renderer now renders:
+  - A live device table fed by the Rust discovery loop.
+  - Connection status + heartbeat telemetry coming from the MAVLink service.
+  - Parameter fetch progress/batches and mission log events emitted by the native core.
 
 ### Rust core
-- Built as a `cdylib` using napi-rs. Functions annotated with `#[napi]` are callable from Node/Electron as synchronous or async commands.
-- Exposes `health_check()`, `run_diagnostics()`, `bootstrap_vehicle_status()`, `simulate_failure()`, and `version()` with structured error propagation.
-- `domain-model/` crate centralises MAVLink-agnostic data types (vehicle IDs, arming state, etc.) so both the napi layer and future Rust services share one definition set.
-- Future crates will house MAVLink transport, mission planners, parameter stores, etc. Exported APIs should stay small and typed to keep the boundary stable.
+- Built as a `cdylib` using napi-rs. `#[napi]` functions expose synchronous commands (health/version) and async flows (device watch, connect/disconnect, parameter fetch).
+- `discovery.rs` polls serial ports + UDP defaults, deduplicates devices, and emits `CoreEvent`s into a threadsafe function sink.
+- `mavlink.rs` manages simulated, UDP, and serial links (via `mavlink` crate), forwards heartbeat/statustext messages, and orchestrates parameter downloads with timeout/stream progress.
+- `domain-model/` centralises MAVLink-agnostic data types so both the napi layer and future services share one schema.
 
+## Phase 1 capabilities
+
+- **Device discovery**: `startDeviceWatch` spawns a background task that surfaces serial devices plus default UDP endpoints; snapshots and deltas are streamed to Electron.
+- **Core event bus**: `registerEventSink` wires a napi `ThreadsafeFunction`, allowing Rust to push `device_*`, `connection_status`, `heartbeat`, `mission_log`, `parameter_*`, and diagnostic events directly to the renderer.
+- **MAVLink connectivity**: `connectMavlink` supports `Simulated`, UDP (`udpin:*`), and serial endpoints. Heartbeats update shared `VehicleStatus`, while `STATUSTEXT` feeds the mission log pipeline.
+- **Parameter downloads**: `fetchParameters` issues `PARAM_REQUEST_LIST`, tracks progress, caches the resulting list, and emits progress/batch events for the renderer.
+- **Electron UI**: new controls allow refreshing links, connecting/disconnecting, and triggering parameter syncs while visualising telemetry/log output.
+
+**Try it locally:**
+
+1. `npm run build` (or `npm run dev` for hot reload) to build the napi module + bundles.
+2. Launch the Electron shell; you should see the device table populate (default UDP + any detected serial ports).
+3. Click **Connect** on the simulated link (or provide a real endpoint), observe heartbeats + connection status updates, then **Fetch Parameters** to exercise the async pipeline.
+4. Logs stream in via the shared event bus; diagnostics still available under **Run Diagnostics** / **Simulate Failure**.
 ## Prerequisites
 - Node.js ≥ 18 (for Electron 30 and napi builds).
 - Rust toolchain (stable) with the `rustup` default target for your OS.
@@ -61,8 +81,9 @@ Key scripts:
 
 ## Next steps
 
-1. Design the native API surface (e.g., async telemetry streams, command dispatch) and expose them via napi-rs.
-2. Add CI jobs for `napi build` on each platform to guarantee the Node module stays portable.
-3. Expand the renderer into mission management, telemetry panels, and maps using the new bindings.
+1. Extend the MAVLink service with live telemetry streams (attitude, battery, GPS) and expose them as structured events.
+2. Layer a TypeScript state store (Zustand/Redux) on the renderer side to normalise event consumption and hydrate dashboards.
+3. Implement bidirectional command channels (RC override, mission upload) with optimistic UI + error handling.
+4. Add CI coverage for `npm run build`, `npm run test`, and smoke-connect scripts to keep the napi bridge healthy across platforms.
 
-This scaffold gives us a compact playground for migrating features from the legacy Qt codebase to a modern Electron + Rust stack.
+With Phase 1 complete, the greenfield shell now proves end-to-end connectivity and logging without touching the legacy Qt UI, giving us a launch pad for the telemetry/Mission planning work queued in Phases 2 and beyond.

@@ -9,14 +9,84 @@ export declare const enum ArmingState {
 
 export declare export declare function bootstrapVehicleStatus(): VehicleStatus
 
-/** Provide richer error context for the renderer. */
+export declare export declare function cachedParameters(): Array<ParameterValue>
+
+export declare const enum ConnectionPhase {
+  Idle = 'Idle',
+  Discovering = 'Discovering',
+  Connecting = 'Connecting',
+  Connected = 'Connected',
+  Disconnecting = 'Disconnecting',
+  Disconnected = 'Disconnected',
+  Error = 'Error'
+}
+
+export interface ConnectionStatus {
+  phase: ConnectionPhase
+  message?: string
+  device?: DeviceDescriptor
+}
+
+export declare export declare function connectMavlink(options?: ConnectOptions | undefined | null): Promise<ConnectionStatus>
+
+export interface ConnectOptions {
+  link?: LinkKind
+  deviceId?: string
+  serialPath?: string
+  serialBaud?: number
+  udpBind?: string
+  udpTargetHost?: string
+  udpTargetPort?: number
+  label?: string
+  forceSimulated?: boolean
+}
+
+export declare export declare function currentConnectionStatus(): ConnectionStatus
+
 export declare export declare function describeStatusChannel(): string
 
+export interface DeviceDescriptor {
+  id: string
+  label: string
+  transport: LinkKind
+  serialPath?: string
+  manufacturer?: string
+  product?: string
+  vid?: number
+  pid?: number
+  udpBind?: string
+  udpTargetHost?: string
+  udpTargetPort?: number
+}
+
+export declare export declare function disconnectMavlink(): Promise<void>
+
+export declare export declare function fetchParameters(timeoutMs?: number | undefined | null): Promise<Array<ParameterValue>>
+
 export declare export declare function healthCheck(): StatusMessage
+
+export declare const enum LinkKind {
+  Simulated = 'Simulated',
+  Serial = 'Serial',
+  Udp = 'Udp'
+}
+
+export declare export declare function listDevices(): Array<DeviceDescriptor>
+
+export interface ParameterValue {
+  name: string
+  value: number
+  paramType: string
+  index?: number
+}
+
+export declare export declare function registerEventSink(callback: (...args: any[]) => any): void
 
 export declare export declare function runDiagnostics(timeoutMs?: number | undefined | null): Promise<StatusMessage>
 
 export declare export declare function simulateFailure(): void
+
+export declare export declare function startDeviceWatch(intervalMs?: number | undefined | null): Promise<void>
 
 /** Message returned to the Electron shell. */
 export interface StatusMessage {

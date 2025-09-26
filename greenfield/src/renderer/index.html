@@ -15,12 +15,19 @@
         color: #f9fafb;
       }
       main {
-        max-width: 720px;
+        max-width: 1100px;
         margin: 0 auto;
+        display: grid;
+        gap: 2rem;
       }
       h1 {
         margin-top: 0;
         font-size: 2rem;
+      }
+      section {
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 0.75rem;
+        padding: 1.5rem;
       }
       #status-badge {
         display: inline-block;
@@ -51,10 +58,14 @@
       .log-entry[data-level="error"] {
         background: rgba(239, 68, 68, 0.2);
       }
+      .log-entry[data-level="warn"] {
+        background: rgba(234, 179, 8, 0.22);
+      }
       .controls {
         margin-top: 1rem;
         display: flex;
         gap: 0.75rem;
+        flex-wrap: wrap;
       }
       button {
         padding: 0.5rem 1rem;
@@ -68,7 +79,7 @@
       button:hover {
         background: #1d4ed8;
       }
-      #vehicle-status {
+      #vehicle-status, #connection-status, #parameter-stats {
         margin-top: 1rem;
         padding: 1rem;
         border-radius: 0.75rem;
@@ -76,24 +87,71 @@
         display: grid;
         gap: 0.4rem;
       }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        color: inherit;
+      }
+      th, td {
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      tbody tr:hover {
+        background: rgba(37, 99, 235, 0.12);
+      }
+      .device-actions {
+        display: flex;
+        gap: 0.5rem;
+      }
     </style>
   </head>
   <body>
     <main>
-      <h1>QGroundControl Greenfield Shell</h1>
-      <p>
-        Rust core status:
-        <span id="status-badge">Waiting…</span>
-      </p>
-      <div class="controls">
-        <button id="run-diagnostics">Run Diagnostics</button>
-        <button id="simulate-failure">Simulate Failure</button>
-      </div>
+      <section>
+        <h1>QGroundControl Greenfield Shell</h1>
+        <p>
+          Rust core status:
+          <span id="status-badge">Waiting…</span>
+        </p>
+        <div class="controls">
+          <button id="run-diagnostics">Run Diagnostics</button>
+          <button id="simulate-failure">Simulate Failure</button>
+          <button id="refresh-devices">Refresh Links</button>
+          <button id="disconnect-link">Disconnect</button>
+          <button id="fetch-parameters">Fetch Parameters</button>
+        </div>
+      </section>
+      <section>
+        <h2>Available Links</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Label</th>
+              <th>Transport</th>
+              <th>Details</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="device-table"></tbody>
+        </table>
+      </section>
+      <section>
+        <h2>Connection Status</h2>
+        <div id="connection-status">Idle</div>
+      </section>
       <section>
         <h2>Vehicle Snapshot</h2>
-        <div id="vehicle-status">Loading…</div>
+        <div id="vehicle-status">Waiting for heartbeat…</div>
       </section>
-      <section id="rust-log"></section>
+      <section>
+        <h2>Parameters</h2>
+        <div id="parameter-stats">No parameter data yet</div>
+      </section>
+      <section>
+        <h2>Event Log</h2>
+        <div id="rust-log"></div>
+      </section>
     </main>
     <script type="module" src="./index.js"></script>
   </body>

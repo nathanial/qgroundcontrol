@@ -1,10 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(__dirname, '..');
 
 type StatusMessage = {
   kind: string;
@@ -17,6 +14,26 @@ type VehicleStatus = {
   armingState: string;
   heartbeatMillis: number;
 };
+
+type DeviceDescriptor = {
+  id: string;
+  label: string;
+  transport: string;
+};
+
+type ConnectionStatus = {
+  phase: string;
+  message?: string;
+  device?: DeviceDescriptor | null;
+};
+
+type ParameterValue = {
+  name: string;
+  value: number;
+};
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(__dirname, '..');
 
 function resolveNativeModule(): string {
   const rustCoreDir = path.join(projectRoot, 'rust-core');
@@ -35,11 +52,23 @@ function resolveNativeModule(): string {
   return path.join(rustCoreDir, candidate);
 }
 
-const rust = require(resolveNativeModule()) as {
+type RustModule = {
   healthCheck(): StatusMessage;
   runDiagnostics(timeoutMs?: number): Promise<StatusMessage>;
   bootstrapVehicleStatus(): VehicleStatus;
+  registerEventSink(callback: (event: unknown) => void): void;
+  listDevices(): DeviceDescriptor[];
+  connectMavlink(options?: Record<string, unknown>): Promise<ConnectionStatus>;
+  disconnectMavlink(): Promise<void>;
+  fetchParameters(timeoutMs?: number): Promise<ParameterValue[]>;
+  currentConnectionStatus(): ConnectionStatus;
 };
+
+const rust = require(resolveNativeModule()) as RustModule;
+
+beforeAll(() => {
+  rust.registerEventSink(vi.fn());
+});
 
 describe('rust-core napi surface', () => {
   it('returns a health check message', () => {
@@ -58,5 +87,20 @@ describe('rust-core napi surface', () => {
     const vehicle = rust.bootstrapVehicleStatus();
     expect(vehicle.vehicleId).toBeDefined();
     expect(vehicle.vehicleType).not.toHaveLength(0);
+  });
+
+  it('supports simulated link connectivity', async () => {
+    const devices = rust.listDevices();
+    expect(devices.length).toBeGreaterThan(0);
+
+    const status = await rust.connectMavlink({ forceSimulated: true });
+    expect(status.phase).toBeDefined();
+
+    const params = await rust.fetchParameters(1_000);
+    expect(params.length).toBeGreaterThan(0);
+
+    await rust.disconnectMavlink();
+    const idleStatus = rust.currentConnectionStatus();
+    expect(idleStatus.phase).toBeDefined();
   });
 });

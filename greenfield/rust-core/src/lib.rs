@@ -1,8 +1,13 @@
+mod discovery;
 mod error;
+mod events;
+mod mavlink;
 
 use std::time::Duration;
 
+use discovery::snapshot_devices;
 use error::{invalid_argument, timeout, CoreError, CoreResult};
+use mavlink::{manager as mav_manager, resolve_link, simulated_descriptor, LinkConfig};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use qgc_domain as domain;
@@ -87,6 +92,168 @@ impl From<domain::VehicleStatus> for VehicleStatus {
     }
 }
 
+#[napi(string_enum)]
+pub enum LinkKind {
+    Simulated,
+    Serial,
+    Udp,
+}
+
+impl From<domain::LinkKind> for LinkKind {
+    fn from(value: domain::LinkKind) -> Self {
+        match value {
+            domain::LinkKind::Simulated => Self::Simulated,
+            domain::LinkKind::Serial => Self::Serial,
+            domain::LinkKind::Udp => Self::Udp,
+        }
+    }
+}
+
+impl From<LinkKind> for domain::LinkKind {
+    fn from(value: LinkKind) -> Self {
+        match value {
+            LinkKind::Simulated => Self::Simulated,
+            LinkKind::Serial => Self::Serial,
+            LinkKind::Udp => Self::Udp,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct DeviceDescriptor {
+    pub id: String,
+    pub label: String,
+    pub transport: LinkKind,
+    pub serial_path: Option<String>,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
+    pub vid: Option<u16>,
+    pub pid: Option<u16>,
+    pub udp_bind: Option<String>,
+    pub udp_target_host: Option<String>,
+    pub udp_target_port: Option<u16>,
+}
+
+impl From<domain::DeviceDescriptor> for DeviceDescriptor {
+    fn from(descriptor: domain::DeviceDescriptor) -> Self {
+        let mut result = Self {
+            id: descriptor.id,
+            label: descriptor.label,
+            transport: descriptor.transport.clone().into(),
+            serial_path: None,
+            manufacturer: None,
+            product: None,
+            vid: None,
+            pid: None,
+            udp_bind: None,
+            udp_target_host: None,
+            udp_target_port: None,
+        };
+
+        match descriptor.details {
+            domain::DeviceDetails::Simulated => {}
+            domain::DeviceDetails::Serial {
+                path,
+                manufacturer,
+                product,
+                vid,
+                pid,
+            } => {
+                result.serial_path = Some(path);
+                result.manufacturer = manufacturer;
+                result.product = product;
+                result.vid = vid;
+                result.pid = pid;
+            }
+            domain::DeviceDetails::Udp {
+                bind,
+                target_host,
+                target_port,
+            } => {
+                result.udp_bind = Some(bind);
+                result.udp_target_host = target_host;
+                result.udp_target_port = target_port;
+            }
+        }
+
+        result
+    }
+}
+
+#[napi(object)]
+pub struct ConnectOptions {
+    pub link: Option<LinkKind>,
+    pub device_id: Option<String>,
+    pub serial_path: Option<String>,
+    pub serial_baud: Option<u32>,
+    pub udp_bind: Option<String>,
+    pub udp_target_host: Option<String>,
+    pub udp_target_port: Option<u16>,
+    pub label: Option<String>,
+    pub force_simulated: Option<bool>,
+}
+
+#[napi(string_enum)]
+pub enum ConnectionPhase {
+    Idle,
+    Discovering,
+    Connecting,
+    Connected,
+    Disconnecting,
+    Disconnected,
+    Error,
+}
+
+impl From<domain::ConnectionPhase> for ConnectionPhase {
+    fn from(value: domain::ConnectionPhase) -> Self {
+        match value {
+            domain::ConnectionPhase::Idle => Self::Idle,
+            domain::ConnectionPhase::Discovering => Self::Discovering,
+            domain::ConnectionPhase::Connecting => Self::Connecting,
+            domain::ConnectionPhase::Connected => Self::Connected,
+            domain::ConnectionPhase::Disconnecting => Self::Disconnecting,
+            domain::ConnectionPhase::Disconnected => Self::Disconnected,
+            domain::ConnectionPhase::Error => Self::Error,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct ConnectionStatus {
+    pub phase: ConnectionPhase,
+    pub message: Option<String>,
+    pub device: Option<DeviceDescriptor>,
+}
+
+impl From<domain::ConnectionStatus> for ConnectionStatus {
+    fn from(status: domain::ConnectionStatus) -> Self {
+        Self {
+            phase: status.phase.into(),
+            message: status.message,
+            device: status.device.map(Into::into),
+        }
+    }
+}
+
+#[napi(object)]
+pub struct ParameterValue {
+    pub name: String,
+    pub value: f64,
+    pub param_type: String,
+    pub index: Option<u16>,
+}
+
+impl From<domain::ParameterValue> for ParameterValue {
+    fn from(value: domain::ParameterValue) -> Self {
+        Self {
+            name: value.name,
+            value: value.value as f64,
+            param_type: value.param_type,
+            index: value.index,
+        }
+    }
+}
+
 fn health_check_impl() -> CoreResult<StatusMessage> {
     Ok(StatusMessage::new("health", "rust-core napi module loaded"))
 }
@@ -138,12 +305,163 @@ pub fn simulate_failure() -> Result<()> {
     Err(CoreError::Other(anyhow::anyhow!("forced failure for diagnostics")).into())
 }
 
-/// Provide richer error context for the renderer.
 #[napi]
 pub fn describe_status_channel() -> Result<String> {
     Ok(String::from(
         "Rust core emits JSON envelopes with { level, kind, message } fields.",
     ))
+}
+
+#[napi]
+pub fn register_event_sink(callback: JsFunction) -> Result<()> {
+    events::register_sink(callback).map_err(Into::into)
+}
+
+#[napi]
+pub async fn start_device_watch(interval_ms: Option<u32>) -> Result<()> {
+    let clamped = interval_ms.unwrap_or(1_500).clamp(250, 10_000);
+    discovery::start(Duration::from_millis(clamped as u64)).await;
+    Ok(())
+}
+
+#[napi]
+pub fn list_devices() -> Result<Vec<DeviceDescriptor>> {
+    let devices: Vec<DeviceDescriptor> = snapshot_devices().into_iter().map(Into::into).collect();
+    Ok(devices)
+}
+
+#[napi]
+pub async fn connect_mavlink(options: Option<ConnectOptions>) -> Result<ConnectionStatus> {
+    let options = options.unwrap_or(ConnectOptions {
+        link: None,
+        device_id: None,
+        serial_path: None,
+        serial_baud: None,
+        udp_bind: None,
+        udp_target_host: None,
+        udp_target_port: None,
+        label: None,
+        force_simulated: None,
+    });
+
+    let descriptor = descriptor_from_options(&options)?;
+    let mut link = resolve_link(&descriptor);
+
+    if let LinkConfig::Serial { baud, .. } = &mut link {
+        if let Some(custom) = options.serial_baud {
+            *baud = custom;
+        }
+    }
+
+    let status = mav_manager()
+        .connect(link)
+        .await
+        .map_err::<Error, _>(Into::into)?;
+    Ok(status.into())
+}
+
+#[napi]
+pub async fn disconnect_mavlink() -> Result<()> {
+    mav_manager().disconnect().await.map_err(Into::into)
+}
+
+#[napi]
+pub async fn fetch_parameters(timeout_ms: Option<u32>) -> Result<Vec<ParameterValue>> {
+    let timeout_duration = timeout_ms.map(|value| Duration::from_millis(value as u64));
+    let params = mav_manager()
+        .fetch_parameters(timeout_duration)
+        .await
+        .map_err::<Error, _>(Into::into)?;
+
+    Ok(params.into_iter().map(Into::into).collect())
+}
+
+#[napi]
+pub fn current_connection_status() -> Result<ConnectionStatus> {
+    Ok(mav_manager().status().into())
+}
+
+#[napi]
+pub fn cached_parameters() -> Result<Vec<ParameterValue>> {
+    Ok(mav_manager()
+        .cached_parameters()
+        .into_iter()
+        .map(Into::into)
+        .collect())
+}
+
+fn descriptor_from_options(options: &ConnectOptions) -> CoreResult<domain::DeviceDescriptor> {
+    if options.force_simulated.unwrap_or(false) {
+        return Ok(simulated_descriptor());
+    }
+
+    let known_devices = snapshot_devices();
+
+    if let Some(id) = &options.device_id {
+        if let Some(device) = known_devices.iter().find(|d| &d.id == id) {
+            return Ok(device.clone());
+        }
+    }
+
+    match options.link.unwrap_or(LinkKind::Udp) {
+        LinkKind::Simulated => Ok(simulated_descriptor()),
+        LinkKind::Serial => {
+            let path = options
+                .serial_path
+                .clone()
+                .ok_or_else(|| invalid_argument("serial_path required for serial connections"))?;
+            let label = options
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("Serial {path}"));
+            Ok(domain::DeviceDescriptor {
+                id: options
+                    .device_id
+                    .clone()
+                    .unwrap_or_else(|| format!("serial:{path}")),
+                label,
+                transport: domain::LinkKind::Serial,
+                details: domain::DeviceDetails::Serial {
+                    path,
+                    manufacturer: None,
+                    product: None,
+                    vid: None,
+                    pid: None,
+                },
+            })
+        }
+        LinkKind::Udp => {
+            let bind = options
+                .udp_bind
+                .clone()
+                .or_else(|| {
+                    known_devices.iter().find_map(|d| match &d.details {
+                        domain::DeviceDetails::Udp { bind, .. } => Some(bind.clone()),
+                        _ => None,
+                    })
+                })
+                .unwrap_or_else(|| "0.0.0.0:14550".into());
+
+            let label = options
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("UDP {bind}"));
+
+            Ok(domain::DeviceDescriptor {
+                id: options
+                    .device_id
+                    .clone()
+                    .unwrap_or_else(|| format!("udp:{bind}")),
+                label,
+                transport: domain::LinkKind::Udp,
+                details: domain::DeviceDetails::Udp {
+                    bind,
+                    target_host: options.udp_target_host.clone(),
+                    target_port: options.udp_target_port,
+                },
+            })
+        }
+    }
 }
 
 #[cfg(test)]

@@ -18,9 +18,10 @@ pub type CoreResult<T> = std::result::Result<T, CoreError>;
 impl From<CoreError> for NapiError {
     fn from(value: CoreError) -> Self {
         match value {
-            CoreError::Timeout(duration) => {
-                NapiError::new(Status::Cancelled, format!("operation timed out after {:?}", duration))
-            }
+            CoreError::Timeout(duration) => NapiError::new(
+                Status::Cancelled,
+                format!("operation timed out after {:?}", duration),
+            ),
             CoreError::InvalidArgument(msg) => NapiError::new(Status::InvalidArg, msg),
             CoreError::Other(err) => NapiError::new(Status::GenericFailure, err.to_string()),
         }

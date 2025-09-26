@@ -1,9 +1,18 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import type { StatusMessage, VehicleStatus } from '../rust-core/index';
+import type {
+  StatusMessage,
+  VehicleStatus,
+  DeviceDescriptor,
+  ConnectionStatus,
+  ParameterValue,
+  ConnectOptions
+} from '../rust-core/index';
 
 const RUST_CHANNEL = 'rust-message';
 
 type RustMessageCallback = (message: string) => void;
+
+type ConnectPayload = Partial<ConnectOptions>;
 
 contextBridge.exposeInMainWorld('backend', {
   onRustMessage(callback: RustMessageCallback): () => void {
@@ -25,5 +34,23 @@ contextBridge.exposeInMainWorld('backend', {
   },
   fetchVehicleStatus(): Promise<VehicleStatus> {
     return ipcRenderer.invoke('rust:bootstrapStatus');
+  },
+  listDevices(): Promise<DeviceDescriptor[]> {
+    return ipcRenderer.invoke('rust:listDevices');
+  },
+  connect(options?: ConnectPayload): Promise<ConnectionStatus> {
+    return ipcRenderer.invoke('rust:connect', options ?? {});
+  },
+  disconnect(): Promise<void> {
+    return ipcRenderer.invoke('rust:disconnect');
+  },
+  fetchParameters(timeoutMs?: number): Promise<ParameterValue[]> {
+    return ipcRenderer.invoke('rust:fetchParameters', timeoutMs ?? null);
+  },
+  getConnectionStatus(): Promise<ConnectionStatus> {
+    return ipcRenderer.invoke('rust:getConnectionStatus');
+  },
+  getCachedParameters(): Promise<ParameterValue[]> {
+    return ipcRenderer.invoke('rust:getCachedParameters');
   }
 });

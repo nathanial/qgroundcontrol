@@ -23,6 +23,8 @@
 - Implement serial/UDP device discovery service in Rust; surface device list and connection status events to renderer.
 - Build mission/event logging pipeline (Rust -> TS) mirroring QGC FactGroup events.
 
+**Status update (September 26, 2025):** ✅ Implemented. `rust-core` now exposes a napi event bus, device discovery loop, UDP/serial/simulated link management, and parameter retrieval. Electron surfaces live device tables, connection controls, telemetry heartbeats, and mission logs via the new TypeScript renderer.
+
 ### Phase 2 – Telemetry & Status UI (Week 4-10, overlaps Phase 1)
 - Create TypeScript state manager (Zustand or Redux Toolkit) hydrated from Rust events.
 - Render health dashboard: vehicle heartbeat, GPS, battery, flight mode.
